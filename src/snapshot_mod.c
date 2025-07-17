@@ -21,16 +21,20 @@ module_param(snapshot_password, charp, 0000);
 MODULE_PARM_DESC(snapshot_password, "Password for snapshot authentication");
 
 int init_module(void) {
-    
+    int ret;
+
     if (!snapshot_password) {
-        printk("No password passed");
+        printk(KERN_ERR "No password passed");
         return -EINVAL;
     }
 
     // inizializzazione sistema auth
-    if (auth_init(snapshot_password)) {
-        printk(KERN_INFO "Error initializing authentication structure");
+    ret = auth_init(snapshot_password);
+    if(ret) {
+        printk("%s: failed to initialize auth system\n", MODNAME);
+        return ret;
     }
+    memset(snapshot_password, 0, strlen(snapshot_password));
 
     // registrazione char device
 
@@ -38,7 +42,7 @@ int init_module(void) {
 
     // inizializzazione kprobes
 
-    printk(KERN_INFO "Modulo snapshot: caricamento riuscito\n Password: %s\n", snapshot_password);
+    printk(KERN_INFO "Modulo snapshot: caricamento riuscito\n");
 
     return 0;
 }
@@ -46,8 +50,8 @@ int init_module(void) {
 void cleanup_module(void) {
 
 
-
     // cleanup sistema auth
+    cleanup_auth();
 
     // deregistrazione char device
 
