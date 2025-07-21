@@ -48,7 +48,7 @@ static int calculate_sha256(const char *password, const char *salt, unsigned cha
     }
 
     desc->tfm = tfm;
-    desc->flags = 0;
+    // desc->flags = 0;
 
     ret = crypto_shash_final(desc, output);
 

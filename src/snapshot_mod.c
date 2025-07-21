@@ -8,7 +8,9 @@
 #include <linux/fs.h>
 #include <linux/sched.h>
 #include <linux/version.h>
+
 #include "snapshot_auth.h"
+#include "snapshot_api_dev.h"
 
 #define MODNAME "SNAPSHOT MOD"
 
@@ -37,6 +39,12 @@ int init_module(void) {
     memset(snapshot_password, 0, strlen(snapshot_password));
 
     // registrazione char device
+    ret = dev_init();
+    if(ret < 0) {
+        printk(KERN_ERR "%s: dev_init failed\n", MODNAME);
+        return ret;
+    }
+    printk(KERN_INFO "%s: device major = %d\n", MODNAME, ret);
 
     // inizializzazione struttura snapshot
 
@@ -54,6 +62,7 @@ void cleanup_module(void) {
     cleanup_auth();
 
     // deregistrazione char device
+    dev_cleanup();
 
     // cleanup struttura snapshot
 
