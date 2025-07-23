@@ -11,6 +11,7 @@
 
 #include "snapshot_auth.h"
 #include "snapshot_api_dev.h"
+#include "snapshot_kprobe.h"
 
 #define MODNAME "SNAPSHOT MOD"
 
@@ -41,6 +42,7 @@ int init_module(void) {
     // registrazione char device
     ret = dev_init();
     if(ret < 0) {
+        cleanup_auth();
         printk(KERN_ERR "%s: dev_init failed\n", MODNAME);
         return ret;
     }
@@ -49,6 +51,15 @@ int init_module(void) {
     // inizializzazione struttura snapshot
 
     // inizializzazione kprobes
+    ret = kprobes_init();
+    if(ret < 0) {
+        cleanup_auth();
+        dev_cleanup();
+
+        printk(KERN_ERR "%s: kprobe_init failed\n", MODNAME);
+        return ret;
+    }
+
 
     printk(KERN_INFO "Modulo snapshot: caricamento riuscito\n");
 
@@ -67,6 +78,7 @@ void cleanup_module(void) {
     // cleanup struttura snapshot
 
     // cleanup kprobes
+    kprobes_cleanup();
 
     printk(KERN_INFO "Modulo snapshot: rimozione riuscita\n");
 

@@ -1,0 +1,5 @@
+{
+    "files.associations": {
+        "snapshot_kprobe.h": "c"
+    }
+}

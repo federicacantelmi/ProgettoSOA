@@ -5,7 +5,7 @@ snapshot_mod-objs := \
 	src/snapshot_api_dev.o \
 	src/snapshot_api.o \
 	src/snapshot.o \
-	src/snapshot_kprobe_mount.o
+	src/snapshot_kprobe.o
 
 EXTRA_CFLAGS := -I$(PWD)/include
 

@@ -19,6 +19,7 @@ struct mounted_dev {
     char dev_name[SNAPSHOT_DEV_NAME_LEN];
     dev_t dev;
     struct list_head list;
+    struct rcu_head rcu_head;
 };
 
 /*
@@ -36,6 +37,7 @@ struct nonmounted_dev {
 int snapshot_add_device(const char *);
 int snapshot_remove_device(const char *);
 int snapshot_handle_mount(const char *, dev_t, const char *);
+int snapshot_handle_unmount(dev_t);
 int snapshot_init(void);
 void snapshot_cleanup(void);
 

@@ -30,6 +30,7 @@ static void free_snapshot_device_rcu(struct rcu_head *rcu) {
 *   - crea snapshot_device
 *   - cerca major/minor -> OSS: può essere block device o loop device
 *   - aggiunge device alla lista
+*   Invocata dalla API activate_snapshot().
 */
 int snapshot_add_device(const char *dev_name) {
 
@@ -53,7 +54,8 @@ int snapshot_add_device(const char *dev_name) {
 }
 
 /*
-*   Rimuove device dalla lista dei device attivi
+*   Rimuove device dalla lista dei device attivi.
+*   Invocata dalla API deactivate_snapshot().
 */
 //todo controlla caso in cui invoca deactivate ma dispositivo è ancora montato
 int snapshot_remove_device(const char *dev_name) {
@@ -107,7 +109,7 @@ int snapshot_handle_mount(const char *dev_name, dev_t dev, const char *timestamp
     rcu_read_unlock();
 
     if(!found) {
-        // todo printk device non ha abilitato snapshot
+        printk(KERN_ERR "%s: device (%d, %d) has no snapshot acivated", MODNAME, MAJOR(dev), MINOR(dev));
         return -EINVAL;
     }
 
@@ -116,7 +118,7 @@ int snapshot_handle_mount(const char *dev_name, dev_t dev, const char *timestamp
     // Inizia a costruire directory
     dir_path = kmalloc(MAX_PATH_LEN, GFP_KERNEL);
     if(!dir_path) {
-        // todo controlla ret
+        printk(KERN_ERR "%s: kmalloc while creating directory path failed: could not allocate dir_path", MODNAME);
         return -ENOMEM;
     }
 
@@ -124,15 +126,14 @@ int snapshot_handle_mount(const char *dev_name, dev_t dev, const char *timestamp
     ret = snprintf(dir_path, MAX_PATH_LEN, "%s/%s_%s", SNAPSHOT_DIR_PATH, dev_name, timestamp);
     if(ret >= MAX_PATH_LEN || ret < 0) {
         kfree(dir_path);
-        // todo printk
+        printk(KERN_ERR "%s: snprintf while creating directcory path failed", MODNAME);
         return -EINVAL;
     }
 
     // Crea directory
     ret = kern_path(SNAPSHOT_DIR_PATH, LOOKUP_DIRECTORY, NULL);
     if(ret) {
-        // todo controlla ret
-        // Non esiste /snapshot
+        printk(KERN_ERR "%s: kern_path while creating directory path failed: there's no existing /snapshot", MODNAME);
         goto out;
     }
 
@@ -141,13 +142,14 @@ int snapshot_handle_mount(const char *dev_name, dev_t dev, const char *timestamp
     if (IS_ERR(dentry_ret)) {
         ret = PTR_ERR(dentry_ret);
         if (ret != -EEXIST)
+        // todo printk
             goto out;
     }
 
     // Alloca elemento device active
     m_dev = kmalloc(sizeof(*m_dev), GFP_ATOMIC);
     if(!m_dev) {
-        //todo printk
+        printk(KERN_ERR "%s: kmalloc while creating directory path failed: could not allocate non-mounted device", MODNAME);
         kfree(dir_path);
         return -ENOMEM;
     }
@@ -177,7 +179,7 @@ int snapshot_handle_mount(const char *dev_name, dev_t dev, const char *timestamp
     }
 
     if(!found && already_active) {
-        // printk elemento è stato eliminato in concorrenza da qualcun altro
+        printk(KERN_ERR "%s: device was already mounted in concurrency", MODNAME);
         spin_unlock(&active_devices_list_lock);
         spin_unlock(&nonactive_devices_list_lock);
 
@@ -210,10 +212,93 @@ out:
 }
 
 // todo handler unmount
+int snapshot_handle_unmount(dev_t dev) {
+    struct nonmounted_dev *n_dev, *p;
+    struct mounted_dev *m_dev;
+    bool found = false;
+    bool already_active = false;
 
+    // Cerca il dev nella lista dei device attivi
+    rcu_read_lock();
 
+    list_for_each_entry_rcu(m_dev, &active_devices_list, list) {
+        if(m_dev->dev == dev) {
+            found = true;
+            break;
+        }
+    }
 
+    rcu_read_unlock();
 
+    if(!found) {
+        // todo printk device non ha abilitato snapshot
+        return -EINVAL;
+    }
+
+    // se found => device ha abilitato snapshot
+
+    // Alloca elemento device active
+    n_dev = kmalloc(sizeof(*n_dev), GFP_ATOMIC);
+    if(!n_dev) {
+        //todo printk
+        return -ENOMEM;
+    }
+
+    strscpy(n_dev->dev_name, m_dev->dev_name, SNAPSHOT_DEV_NAME_LEN);
+    INIT_LIST_HEAD(&n_dev->list);
+
+    // Prende lock su lista active e lista non active
+    spin_lock(&active_devices_list_lock);
+    spin_lock(&nonactive_devices_list_lock);
+
+    // Controllo ancora se device è nella lista active (potrei avere unmount concorrente che nel frattempo lo ha spostato di lista)
+    found = false;
+    list_for_each_entry(m_dev, &active_devices_list, list) {
+        if(m_dev->dev == dev) {
+            found = true;
+            break;
+        }
+    }
+
+    list_for_each_entry(p, &nonactive_devices_list, list) {
+        if(p->dev_name == m_dev->dev_name) {
+            already_active = true;
+            break;
+        }
+    }
+
+    // Controllo di coerenza
+    if (found && already_active) {
+        pr_warn("Snapshot: device %u trovato in entrambe le liste (incoerenza)\n", dev);
+        WARN_ONCE(1, "Device presente in entrambe le liste!\n");
+        goto out_unlock_free;
+    }
+
+    if (!found && !already_active) {
+        pr_warn("Snapshot: device %u perso da entrambe le liste (race?)\n", dev);
+        WARN_ONCE(1, "Device scomparso da entrambe le liste!\n");
+        goto out_unlock_free;
+    }
+
+    if(!found && already_active) {
+        // printk elemento è stato eliminato in concorrenza da qualcun altro
+        goto out_unlock_free;
+    }
+
+    list_add_tail_rcu(&n_dev->list, &nonactive_devices_list);
+    list_del_rcu(&m_dev->list);
+
+    spin_unlock(&active_devices_list_lock);
+    spin_unlock(&nonactive_devices_list_lock);
+
+    call_rcu(&m_dev->rcu_head, free_snapshot_device_rcu);
+
+out_unlock_free:
+    spin_unlock(&nonactive_devices_list_lock);
+    spin_unlock(&active_devices_list_lock);
+    kfree(n_dev);
+    return 0;
+}
 
 /*
 *   Alloca workqueue
