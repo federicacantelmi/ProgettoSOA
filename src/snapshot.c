@@ -10,6 +10,8 @@
 #include <linux/fs.h>
 
 #include "snapshot.h"
+#define MODNAME "SNAPSHOT MOD"
+
 
 static LIST_HEAD(active_devices_list);
 static DEFINE_SPINLOCK(active_devices_list_lock);
@@ -19,8 +21,14 @@ static DEFINE_SPINLOCK(nonactive_devices_list_lock);
 /*
 *   Funzione chiamata in callback per eliminazione dell'area allocata
 */
-static void free_snapshot_device_rcu(struct rcu_head *rcu) {
+static void free_snapshot_device_nm_rcu(struct rcu_head *rcu) {
     struct nonmounted_dev *p = container_of(rcu, struct nonmounted_dev, rcu_head);
+    kfree(p->dev_name);
+    kfree(p);
+}
+
+static void free_snapshot_device_m_rcu(struct rcu_head *rcu) {
+    struct mounted_dev *p = container_of(rcu, struct mounted_dev, rcu_head);
     kfree(p->dev_name);
     kfree(p);
 }
@@ -62,6 +70,20 @@ int snapshot_remove_device(const char *dev_name) {
 
     struct nonmounted_dev *p, *tmp;
 
+    struct mounted_dev *m;
+
+    // Prima controlla se il device è nella lista active
+    spin_lock(&active_devices_list_lock);
+    list_for_each_entry(m, &active_devices_list, list) {
+        if (strncmp(m->dev_name, dev_name, SNAPSHOT_DEV_NAME_LEN) == 0) {
+            spin_unlock(&active_devices_list_lock);
+            printk(KERN_ERR "%s: cannot deactivate snapshot on device %s: device is still mounted", MODNAME, dev_name);
+            return -EBUSY;
+        }
+    }
+    spin_unlock(&active_devices_list_lock);
+
+    // Poi cerca e rimuovi dalla lista nonactive
     spin_lock(&nonactive_devices_list_lock);
     
     list_for_each_entry_safe(p, tmp, &nonactive_devices_list, list) {
@@ -70,14 +92,14 @@ int snapshot_remove_device(const char *dev_name) {
             spin_unlock(&nonactive_devices_list_lock);
 
             // Posticipa la kfree a quando tutti i lettori avranno finito
-            call_rcu(&p->rcu_head, free_snapshot_device_rcu);
+            call_rcu(&p->rcu_head, free_snapshot_device_nm_rcu);
 
             return 0;
         }
     }
 
     spin_unlock(&nonactive_devices_list_lock);
-    // printk
+    printk(KERN_ERR "%s: device %s not found in nonactive list", MODNAME, dev_name);
     return -ENOENT;
 }
 
@@ -96,7 +118,7 @@ int snapshot_handle_mount(const char *dev_name, dev_t dev, const char *timestamp
     bool already_active = false;
     struct dentry *dentry_ret;
 
-    // Cerca il dev nella lista dei device attivi
+    // Cerca il dev nella lista dei device per cui è attivo snapshot ma non montati
     rcu_read_lock();
 
     list_for_each_entry_rcu(n_dev, &nonactive_devices_list, list) {
@@ -113,9 +135,7 @@ int snapshot_handle_mount(const char *dev_name, dev_t dev, const char *timestamp
         return -EINVAL;
     }
 
-    // se found => device ha abbilitato snapshot
-
-    // Inizia a costruire directory
+    // Alloca spazio per il path della directory
     dir_path = kmalloc(MAX_PATH_LEN, GFP_KERNEL);
     if(!dir_path) {
         printk(KERN_ERR "%s: kmalloc while creating directory path failed: could not allocate dir_path", MODNAME);
@@ -125,25 +145,27 @@ int snapshot_handle_mount(const char *dev_name, dev_t dev, const char *timestamp
     // Costruisce path
     ret = snprintf(dir_path, MAX_PATH_LEN, "%s/%s_%s", SNAPSHOT_DIR_PATH, dev_name, timestamp);
     if(ret >= MAX_PATH_LEN || ret < 0) {
-        kfree(dir_path);
         printk(KERN_ERR "%s: snprintf while creating directcory path failed", MODNAME);
+        kfree(dir_path);
         return -EINVAL;
     }
 
-    // Crea directory
+    // Verifica che la directory /snapshot esista
     ret = kern_path(SNAPSHOT_DIR_PATH, LOOKUP_DIRECTORY, NULL);
     if(ret) {
         printk(KERN_ERR "%s: kern_path while creating directory path failed: there's no existing /snapshot", MODNAME);
-        goto out;
+        kfree(dir_path);
+        return -ENOENT;
     }
 
     // Crea nuova sottodirectory
     dentry_ret = kern_path_create(AT_FDCWD, dir_path, NULL, 0);
     if (IS_ERR(dentry_ret)) {
         ret = PTR_ERR(dentry_ret);
-        if (ret != -EEXIST)
-        // todo printk
-            goto out;
+        if (ret != -EEXIST) {
+            printk(KERN_ERR "%s: failed to create snapshot subdirectory (%d)", MODNAME, ret);
+            return ret;
+        }
     }
 
     // Alloca elemento device active
@@ -162,7 +184,7 @@ int snapshot_handle_mount(const char *dev_name, dev_t dev, const char *timestamp
     spin_lock(&active_devices_list_lock);
     spin_lock(&nonactive_devices_list_lock);
 
-    // Controllo ancora se device è nella lista non active (potrei avere mount concorrente che nel frattempo lo ha spostato di lista)
+    // Controlla ancora se device è nella lista non active (potrei avere mount concorrente che nel frattempo lo ha spostato di lista)
     found = false;
     list_for_each_entry(n_dev, &nonactive_devices_list, list) {
         if(strncmp(n_dev->dev_name, dev_name, SNAPSHOT_DEV_NAME_LEN) == 0) {
@@ -185,7 +207,7 @@ int snapshot_handle_mount(const char *dev_name, dev_t dev, const char *timestamp
 
         kfree(m_dev);
 
-        // elimino directory creata
+        // Elimina directory creata
         ret = kern_path(dir_path, LOOKUP_DIRECTORY, &path);
         if (!ret) {
             vfs_rmdir(NULL, path.dentry->d_parent->d_inode, path.dentry);
@@ -193,22 +215,21 @@ int snapshot_handle_mount(const char *dev_name, dev_t dev, const char *timestamp
         }
 
         kfree(dir_path);
-        // todo cambia valore return
-        return 0;
+        return -EALREADY;
     }
 
+    // Sposta device da nonactive a active
     list_add_tail_rcu(&m_dev->list, &active_devices_list);
     list_del_rcu(&n_dev->list);
 
     spin_unlock(&active_devices_list_lock);
     spin_unlock(&nonactive_devices_list_lock);
 
-    call_rcu(&n_dev->rcu_head, free_snapshot_device_rcu);
+    call_rcu(&n_dev->rcu_head, free_snapshot_device_nm_rcu);
 
     // todo scrivi metadati 
-out:
     kfree(dir_path);  
-    return ret;
+    return 0;
 }
 
 // todo handler unmount
@@ -217,6 +238,7 @@ int snapshot_handle_unmount(dev_t dev) {
     struct mounted_dev *m_dev;
     bool found = false;
     bool already_active = false;
+    int ret;
 
     // Cerca il dev nella lista dei device attivi
     rcu_read_lock();
@@ -231,7 +253,7 @@ int snapshot_handle_unmount(dev_t dev) {
     rcu_read_unlock();
 
     if(!found) {
-        // todo printk device non ha abilitato snapshot
+        printk(KERN_ERR "%s: device (%d, %d) has no snapshot", MODNAME, MAJOR(dev), MINOR(dev));
         return -EINVAL;
     }
 
@@ -240,7 +262,7 @@ int snapshot_handle_unmount(dev_t dev) {
     // Alloca elemento device active
     n_dev = kmalloc(sizeof(*n_dev), GFP_ATOMIC);
     if(!n_dev) {
-        //todo printk
+        printk(KERN_ERR "%s: kmalloc failed while handling unmount for device (%d, %d)", MODNAME, MAJOR(dev), MINOR(dev));
         return -ENOMEM;
     }
 
@@ -261,7 +283,7 @@ int snapshot_handle_unmount(dev_t dev) {
     }
 
     list_for_each_entry(p, &nonactive_devices_list, list) {
-        if(p->dev_name == m_dev->dev_name) {
+        if(strncmp(p->dev_name, m_dev->dev_name, SNAPSHOT_DEV_NAME_LEN) == 0) {
             already_active = true;
             break;
         }
@@ -269,19 +291,20 @@ int snapshot_handle_unmount(dev_t dev) {
 
     // Controllo di coerenza
     if (found && already_active) {
-        pr_warn("Snapshot: device %u trovato in entrambe le liste (incoerenza)\n", dev);
-        WARN_ONCE(1, "Device presente in entrambe le liste!\n");
+        printk(KERN_ERR "%s: device (%d, %d) found in both lists (incoherence)", MODNAME, MAJOR(dev), MINOR(dev));
+        ret = -EIO;
         goto out_unlock_free;
     }
 
     if (!found && !already_active) {
-        pr_warn("Snapshot: device %u perso da entrambe le liste (race?)\n", dev);
-        WARN_ONCE(1, "Device scomparso da entrambe le liste!\n");
+        printk(KERN_ERR "%s: device (%d, %d) lost from both lists (race?)", MODNAME, MAJOR(dev), MINOR(dev));
+        ret = -ENOENT;
         goto out_unlock_free;
     }
 
     if(!found && already_active) {
-        // printk elemento è stato eliminato in concorrenza da qualcun altro
+        printk(KERN_WARNING "%s: device (%d, %d) was removed concurrently", MODNAME, MAJOR(dev), MINOR(dev));
+        ret = -EALREADY;
         goto out_unlock_free;
     }
 
@@ -291,13 +314,14 @@ int snapshot_handle_unmount(dev_t dev) {
     spin_unlock(&active_devices_list_lock);
     spin_unlock(&nonactive_devices_list_lock);
 
-    call_rcu(&m_dev->rcu_head, free_snapshot_device_rcu);
+    call_rcu(&m_dev->rcu_head, free_snapshot_device_m_rcu);
+    return 0;
 
 out_unlock_free:
     spin_unlock(&nonactive_devices_list_lock);
     spin_unlock(&active_devices_list_lock);
     kfree(n_dev);
-    return 0;
+    return ret;
 }
 
 /*
@@ -305,8 +329,48 @@ out_unlock_free:
 *   crea directory /snapshot
 */
 int snapshot_init(void) {
+
+    // (Opzionale) Inizializza una workqueue
+    // my_wq = alloc_workqueue("snapshot_wq", WQ_UNBOUND, 0);
+    // if (!my_wq) {
+    //     printk(KERN_ERR "%s: failed to allocate workqueue", MODNAME);
+    //     return -ENOMEM;
+    // }
+
+    printk(KERN_INFO "%s: snapshot_init completed", MODNAME);
     return 0;
 }
 
 void snapshot_cleanup(void) {
+    struct nonmounted_dev *p, *tmp;
+    struct mounted_dev *m, *mtmp;
+
+    // Libera tutti i device non attivi
+    spin_lock(&nonactive_devices_list_lock);
+    list_for_each_entry_safe(p, tmp, &nonactive_devices_list, list) {
+        list_del_rcu(&p->list);
+        call_rcu(&p->rcu_head, free_snapshot_device_nm_rcu);
+    }
+    spin_unlock(&nonactive_devices_list_lock);
+
+    // Libera tutti i device attivi
+    spin_lock(&active_devices_list_lock);
+    list_for_each_entry_safe(m, mtmp, &active_devices_list, list) {
+        list_del_rcu(&m->list);
+        call_rcu(&m->rcu_head, free_snapshot_device_m_rcu);
+    }
+    spin_unlock(&active_devices_list_lock);
+
+    // (Opzionale) Distruggi la workqueue
+    // if (my_wq)
+    //     destroy_workqueue(my_wq);
+
+    // (Opzionale) Rimuovi la directory /snapshot (di solito non necessario)
+    // struct path path;
+    // if (!kern_path(SNAPSHOT_DIR_PATH, LOOKUP_DIRECTORY, &path)) {
+    //     vfs_rmdir(NULL, path.dentry->d_parent->d_inode, path.dentry);
+    //     path_put(&path);
+    // }
+
+    printk(KERN_INFO "%s: snapshot_cleanup completed", MODNAME);
 }

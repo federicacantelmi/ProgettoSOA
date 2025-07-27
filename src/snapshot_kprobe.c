@@ -19,7 +19,7 @@
 static int kprobe_mount_bdev_handler(struct kretprobe_instance *kp, struct pt_regs *regs) {
 
     int ret;
-    char *timestamp;
+    char timestamp[64];
     struct tm tm;
     struct super_block *sb;
     struct block_device *bdev;
@@ -66,7 +66,9 @@ static int kprobe_mount_bdev_handler(struct kretprobe_instance *kp, struct pt_re
 
     ret = snapshot_handle_mount(dev_name, dev, timestamp);
 
-    // todo controlla ret
+    if (ret < 0) {
+        printk(KERN_ERR "%s: snapshot_handle_mount failed for %s (major=%d, minor=%d), error=%d", MODNAME, dev_name, MAJOR(dev), MINOR(dev), ret);
+    }
     return ret;
 }
 
@@ -75,20 +77,20 @@ static int kprobe_mount_bdev_handler(struct kretprobe_instance *kp, struct pt_re
 // in snapshot.c per eliminarlo
 
 static int kprobe_unmount_bdev_entry_handler(struct kretprobe_instance *ri, struct pt_regs *regs) {
-
     struct super_block *sb = (struct super_block *)regs->di;
-    ri->data = sb;
+    memcpy(ri->data, &sb, sizeof(sb)); // Copia il puntatore sb nel buffer data
     return 0;
 }
 
-static int kprobe_mount_bdev_handler(struct kretprobe_instance *ri, struct pt_regs *regs) {
+static int kprobe_unmount_bdev_handler(struct kretprobe_instance *ri, struct pt_regs *regs) {
 
     struct block_device *bdev;
     dev_t dev;
     int ret;
+    struct super_block *sb;
 
-    struct super_block *sb = (struct super_block *)ri->data;
-    if(!sb || |sb->s_bdev) {
+    memcpy(&sb, ri->data, sizeof(sb)); // Recupera il puntatore sb dal buffer data
+    if(!sb || !sb->s_bdev) {
         return 0;
     }
 
@@ -97,6 +99,11 @@ static int kprobe_mount_bdev_handler(struct kretprobe_instance *ri, struct pt_re
 
     // todo controlla ret
     ret = snapshot_handle_unmount(dev);
+
+    if (ret < 0) {
+        printk(KERN_ERR "%s: snapshot_handle_unmount failed for device (major=%d, minor=%d), error=%d", MODNAME, MAJOR(dev), MINOR(dev), ret);
+    }
+
     return ret;
 }
 
@@ -120,17 +127,20 @@ int kprobes_init(void) {
     ret = register_kretprobe(&kprobe_mount_bdev);
 
     if(ret) {
-        // todo printk
+        printk(KERN_ERR "%s: register_kretprobe for mount_bdev failed, error=%d", MODNAME, ret);
         return ret;
     }
+    printk(KERN_INFO "%s: kprobe_mount_bdev registered successfully", MODNAME);
 
     ret = register_kretprobe(&kprobe_unmount_bdev);
 
     if(ret) {
+        printk(KERN_ERR "%s: register_kretprobe for unmount_bdev failed, error=%d", MODNAME, ret);
         unregister_kretprobe(&kprobe_mount_bdev);
-        // todo printk
         return ret;
     }
+
+    printk(KERN_INFO "%s: kprobe_unmount_bdev registered successfully", MODNAME);
 
     return 0;
 }
