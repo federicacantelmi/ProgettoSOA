@@ -22,10 +22,6 @@ static int kprobe_mount_bdev_handler(struct kretprobe_instance *kp, struct pt_re
     char timestamp[64];
     struct tm tm;
     struct super_block *sb;
-    struct block_device *bdev;
-    const char *dev_name;
-    struct gendisk *disk;
-    dev_t dev;
 
     struct dentry *ret_dentry = (struct dentry *)regs_return_value(regs);
 
@@ -35,22 +31,10 @@ static int kprobe_mount_bdev_handler(struct kretprobe_instance *kp, struct pt_re
     }
 
     sb = ret_dentry->d_sb;
-    if(!sb || !sb->s_bdev) {
-        printk(KERN_ERR "%s: superblock or bdev are null", MODNAME);
+    if(!sb) {
+        printk(KERN_ERR "%s: superblock is null", MODNAME);
         return 0;
     }
-
-    bdev = sb->s_bdev;
-    disk = bdev->bd_disk;
-    if(!disk) {
-        printk(KERN_ERR "%s: bd_disk is null", MODNAME);
-        return 0;
-    }
-
-    dev = bdev->bd_dev;
-    dev_name = disk->disk_name;
-
-    printk(KERN_INFO "%s: mount_bdev success -> device with major %d and minor %d mounted", MODNAME, MAJOR(dev), MINOR(dev));
 
     time64_t timestamp_s = ktime_to_timespec64(ktime_get_real()).tv_sec;
     time64_to_tm(timestamp_s, 0, &tm);
@@ -64,7 +48,7 @@ static int kprobe_mount_bdev_handler(struct kretprobe_instance *kp, struct pt_re
         tm.tm_min,
         tm.tm_sec);
 
-    ret = snapshot_handle_mount(dev_name, dev, timestamp);
+    ret = snapshot_handle_mount(sb, timestamp);
 
     if (ret < 0) {
         printk(KERN_ERR "%s: snapshot_handle_mount failed for %s (major=%d, minor=%d), error=%d", MODNAME, dev_name, MAJOR(dev), MINOR(dev), ret);
@@ -107,11 +91,48 @@ static int kprobe_unmount_bdev_handler(struct kretprobe_instance *ri, struct pt_
     return ret;
 }
 
+static int kprobe_write_dirty_buffer_handler(struct kretprobe_instance *ri, struct pt_regs *regs) {
+    struct buffer_head *bh;
+    sector_t b_blocknr;
+    struct block_device *bdev;
+    int ret;
+    size_t size;
+
+    bh = (struct buffer_head *)regs->di;
+    if(!bh) {
+        printk(KERN_ERR "%s: buffer_head is null in write_dirty_buffer_handler", MODNAME);
+        return 0;
+    }
+
+    b_blocknr = bh->b_blocknr;
+    bdev = bh->b_bdev;
+    if(!bdev) {
+        printk(KERN_ERR "%s: block_device is null in write_dirty_buffer_handler", MODNAME);
+        return 0;
+    }
+    dev_t dev = bdev->bd_dev;
+    size = bh->b_size;
+
+    ret = snapshot_handle_write(dev, b_blocknr, size);
+    if(ret < 0) {
+        printk(KERN_ERR "%s: snapshot_handle_write failed for device (major=%d, minor=%d), error=%d", MODNAME, MAJOR(dev), MINOR(dev), ret);
+        return ret;
+    }
+ 
+    return 0;
+}
+
+/*
+*   Struttura kretprobe per intercettare mount_bdev e gestire il mount di un device
+*/
 static struct kretprobe kprobe_mount_bdev = {
     .kp.symbol_name = "mount_bdev",
-    .handler = kprobe_mount_bdev_handler,
+    .handler = kprobe_mount_bdevhandler,
 };
 
+/*
+*   Struttura kretprobe per intercettare kill_block_super e gestire l'unmount di un device
+*/
 static struct kretprobe kprobe_unmount_bdev = {
     .kp.symbol_name = "kill_block_super",
     .handler = kprobe_unmount_bdev_handler,
@@ -120,7 +141,21 @@ static struct kretprobe kprobe_unmount_bdev = {
 };
 
 /*
-*   Registra kretprobe per intercettare mount_bdev
+*   Struttura kretprobe per intercettare write_dirty_buffer e gestire la modifica di un blocco.
+*   OSS: non uso kprobe su sb_bread perché non mi serve sapere quando un blocco viene letto,
+*   ma quando viene scritto.
+*/
+static struct kretprobe kprobe_write_dirty_buffer = {
+    .kp.symbol_name = "write_dirty_buffer",
+    .pre_handler = kprobe_write_dirty_buffer_handler, // Placeholder, implement later if needed
+};
+
+
+
+
+
+/*
+*   Registra kretprobes
 */
 int kprobes_init(void) {
     int ret;

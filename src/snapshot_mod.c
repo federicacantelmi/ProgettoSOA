@@ -54,7 +54,7 @@ int init_module(void) {
         return ret;
     }
     printk(KERN_INFO "%s: device major = %d\n", MODNAME, ret);
-/*
+
     // inizializzazione struttura snapshot
     ret = snapshot_init();
     if(ret < 0) {
@@ -63,7 +63,7 @@ int init_module(void) {
         printk(KERN_ERR "%s: snapshot_init failed\n", MODNAME);
         return ret;
     }
-*/
+
     // inizializzazione kprobes
     ret = kprobes_init();
     if(ret < 0) {
@@ -89,10 +89,10 @@ void cleanup_module(void) {
     
     // deregistrazione char device
     dev_cleanup();
-/*
+
     // cleanup struttura snapshot
     snapshot_cleanup();
-*/
+    
     // cleanup kprobes
     kprobes_cleanup();
 

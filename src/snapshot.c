@@ -8,6 +8,8 @@
 #include <linux/path.h>
 #include <linux/namei.h>
 #include <linux/fs.h>
+#include <linux/workqueue.h>
+#include <linux/buffer_head.h>
 
 #include "snapshot.h"
 #define MODNAME "SNAPSHOT MOD"
@@ -17,6 +19,21 @@ static LIST_HEAD(active_devices_list);
 static DEFINE_SPINLOCK(active_devices_list_lock);
 static LIST_HEAD(nonactive_devices_list);
 static DEFINE_SPINLOCK(nonactive_devices_list_lock);
+
+/*
+*   Struttura per passare lavoro a kworker
+*   @dev: major e minor del block device
+*   @block_nr: numero del blocco
+*   @list: per inserimento in hashtable
+*/
+struct packed_work {
+    struct work_struct work;
+    dev_t dev;
+    sector_t block_nr;
+    size_t size;
+    char *data;
+};
+
 
 /*
 *   Funzione chiamata in callback per eliminazione dell'area allocata
@@ -30,6 +47,8 @@ static void free_snapshot_device_nm_rcu(struct rcu_head *rcu) {
 static void free_snapshot_device_m_rcu(struct rcu_head *rcu) {
     struct mounted_dev *p = container_of(rcu, struct mounted_dev, rcu_head);
     kfree(p->dev_name);
+    kfree(p->dir_path);
+    kfree(p->block_bitmap);
     kfree(p);
 }
 
@@ -107,7 +126,7 @@ int snapshot_remove_device(const char *dev_name) {
 *   Funzione invocata quando viene intercettata la mount di un device per definire
 *   directory in cui salvare le modifiche ai blocchi del dispositivo.
 */
-int snapshot_handle_mount(const char *dev_name, dev_t dev, const char *timestamp) {
+int snapshot_handle_mount(super_block sb, const char *timestamp) {
 
     struct nonmounted_dev *n_dev;
     struct mounted_dev *m_dev, *p;
@@ -117,6 +136,29 @@ int snapshot_handle_mount(const char *dev_name, dev_t dev, const char *timestamp
     bool found = false;
     bool already_active = false;
     struct dentry *dentry_ret;
+    dev_t dev;
+    struct block_device *bdev;
+    struct gendisk *disk;
+    char dev_name[SNAPSHOT_DEV_NAME_LEN];
+
+    // Controlla che bdev non siano null
+    if(!sb->s_bdev) {
+        printk(KERN_ERR "%s: bdev is null", MODNAME);
+        return -EINVAL;
+    }
+
+    bdev = sb->s_bdev;
+    disk = bdev->bd_disk;
+    if(!disk) {
+        printk(KERN_ERR "%s: bd_disk is null", MODNAME);
+        return 0;
+    }
+
+    dev = bdev->bd_dev;
+    dev_name = disk->disk_name;
+
+    printk(KERN_INFO "%s: mount_bdev success -> device with major %d and minor %d mounted", MODNAME, MAJOR(dev), MINOR(dev));
+
 
     // Cerca il dev nella lista dei device per cui è attivo snapshot ma non montati
     rcu_read_lock();
@@ -178,6 +220,27 @@ int snapshot_handle_mount(const char *dev_name, dev_t dev, const char *timestamp
 
     strscpy(m_dev->dev_name, dev_name, SNAPSHOT_DEV_NAME_LEN);
     m_dev->dev = dev;
+    strscpy(m_dev->dir_path, dir_path, MAX_PATH_LEN);
+    
+    // todo sistema qui
+    // Ritorna numero di settori del disco
+    sector_t nr_sectors = get_capacity(disk);
+    // Dimensione dei blocchi nel fs
+    unsigned long block_size = sb->s_blocksize;
+    // Calcola numero di blocchi nel fs (nr_sectors << 9 = nr_sectors * 512 => numero totale di byte sul disco)
+    // e poi divide per la dimensione del blocco
+    m_dev->bitmap_size = (nr_sectors << 9) / block_size;
+    // Alloca la bitmap (BITS_TO_LONG ritorna il numero di unisgned long per contenere quei bit)
+    m_dev->block_bitmap = kmalloc(BITS_TO_LONG(m_dev->bitmap_size) * sizeof(unsigned long), GFP_KERNEL);
+    if(!m_dev->block_bitmap) {
+        printk(KERN_ERR "%s: kmalloc failed for block_bitmap in snapshot_handle_mount", MODNAME);
+        kfree(m_dev);
+        kfree(dir_path);
+        return -ENOMEM;
+    }
+    // Inizializza bitmap a zero
+    memset(m_dev->block_bitmap, 0, BITS_TO_LONG(m_dev->bitmap_size) * sizeof(unsigned long));
+
     INIT_LIST_HEAD(&m_dev->list);
 
     // Prende lock su lista active e lista non active
@@ -324,19 +387,133 @@ out_unlock_free:
     return ret;
 }
 
-/*
-*   Alloca workqueue
-*   crea directory /snapshot
-*/
+static int snapshot_handle_write(dev_t dev, sector_t block_nr, size_t size) {
+
+    // Cerca directory del device
+    // Se non esiste, ritorna errore
+    struct mounted_dev *m_dev;
+    bool found = false;
+    rcu_read_lock();
+    list_for_each_entry_rcu(m_dev, &active_devices_list, list) {
+        if(m_dev->dev == dev) {
+            found = true;
+            break;
+        }
+    }
+    rcu_read_unlock();
+    if(!found) {
+        printk(KERN_ERR "%s: device (%d, %d) has no snapshot", MODNAME, MAJOR(dev), MINOR(dev));
+        return -EINVAL;
+    }
+
+    // Controlla se il blocco è già stato modificato
+    
+    if(block_nr < 0 || block_nr >= m_dev->bitmap_size) {
+        printk(KERN_ERR "%s: block number %llu out of range for device (%d, %d)", MODNAME, (unsigned long long)block_nr, MAJOR(dev), MINOR(dev));
+        return -EINVAL;
+    }
+
+    if (test_bit(bit_index, m_dev->block_bitmap)) {
+        printk(KERN_INFO "%s: block %llu on device (%d, %d) already modified", MODNAME, (unsigned long long)block_nr, MAJOR(dev), MINOR(dev));
+        return 0; // Il blocco è già stato modificato
+    }
+
+    // Segna il blocco come modificato nella bitmap
+    set_bit(bit_index, bitmap);
+    printk(KERN_INFO "%s: block %llu on device (%d, %d) marked as modified", MODNAME, (unsigned long long)block_nr, MAJOR(dev), MINOR(dev));
+    
+    // Crea un nuovo work item per il kworker
+    struct packed_work *work = kmalloc(sizeof(*work), GFP_KERNEL);
+    if (!work) {
+        printk(KERN_ERR "%s: kmalloc failed for packed_work in snapshot_handle_write", MODNAME);
+        return -ENOMEM;
+    }
+
+    work->dev = dev;
+    work->block_nr = block_nr;
+    work->size = size;
+    work->data = kmalloc(size, GFP_KERNEL);
+    if (!work->data) {
+        printk(KERN_ERR "%s: kmalloc failed for data buffer in snapshot_handle_write", MODNAME);
+        kfree(work);
+        return -ENOMEM;
+    }
+
+    // Copia i dati del blocco modificato
+    struct buffer_head *bh = __bread(dev, block_nr, size);
+    if (!bh) {
+        printk(KERN_ERR "%s: __bread failed for device (%d, %d) at block %llu", MODNAME, MAJOR(dev), MINOR(dev), (unsigned long long)block_nr);
+        kfree(work->data);
+        kfree(work);
+        return -EIO;
+    }
+
+    memcpy(work->data, bh->b_data, size);
+    brelse(bh);
+    INIT_WORK(&work->work, snapshot_worker);
+    // Aggiunge il lavoro alla workqueue
+    schedule_work(&work->work);
+    
+    printk(KERN_INFO "%s: scheduled work for block %llu on device (%d, %d)", MODNAME, (unsigned long long)block_nr, MAJOR(dev), MINOR(dev));
+    return 0;
+}
+
+
+static int snapshot_worker(struct work_struct *work) {
+    struct packed_work *work = container_of(work, struct packed_work, work);
+    dev_t dev = work->dev;
+    sector_t block_nr = work->block_nr;
+    size_t size = work->size;
+    char *data = work->data;
+
+    struct mounted_dev *m_dev;
+    bool found = false;
+    rcu_read_lock();
+    list_for_each_entry_rcu(m_dev, &active_devices_list, list) {
+        if(m_dev->dev == dev) {
+            found = true;
+            break;
+        }
+    }
+    rcu_read_unlock();
+    if(!found) {
+        printk(KERN_ERR "%s: device (%d, %d) has no snapshot", MODNAME, MAJOR(dev), MINOR(dev));
+        kfree(data);
+        kfree(work);
+        return -EINVAL;
+    } 
+    // Scrive i dati modificati nel file system
+    struct file *file;
+    char file_path[MAX_PATH_LEN];
+    snprintf(file_path, MAX_PATH_LEN, "%s/%llu.bin", m_dev->dir_path, (unsigned long long)block_nr);
+
+    file = filp_open(file_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (IS_ERR(file)) {
+        printk(KERN_ERR "%s: filp_open failed for %s, error=%ld", MODNAME, file_path, PTR_ERR(file));
+        kfree(data);
+        kfree(work);
+        return PTR_ERR(file);
+    }
+
+    ssize_t ret_write = kernel_write(file, data, size, &file->f_pos);
+    filp_close(file, NULL);
+    if (ret_write < 0) {
+        printk(KERN_ERR "%s: kernel_write failed for %s, error=%zd", MODNAME, file_path, ret_write);
+        kfree(data);
+        kfree(work);
+        return ret_write;
+    }
+    printk(KERN_INFO "%s: wrote %zd bytes to %s for block %llu on device (%d, %d)", MODNAME, file_path, written, (unsigned long long)block_nr, MAJOR(dev), MINOR(dev)); 
+    
+    // Libera la memoria allocata
+    kfree(data);
+    kfree(work);
+
+    return ret;
+}
+
+
 int snapshot_init(void) {
-
-    // (Opzionale) Inizializza una workqueue
-    // my_wq = alloc_workqueue("snapshot_wq", WQ_UNBOUND, 0);
-    // if (!my_wq) {
-    //     printk(KERN_ERR "%s: failed to allocate workqueue", MODNAME);
-    //     return -ENOMEM;
-    // }
-
     printk(KERN_INFO "%s: snapshot_init completed", MODNAME);
     return 0;
 }
@@ -360,17 +537,6 @@ void snapshot_cleanup(void) {
         call_rcu(&m->rcu_head, free_snapshot_device_m_rcu);
     }
     spin_unlock(&active_devices_list_lock);
-
-    // (Opzionale) Distruggi la workqueue
-    // if (my_wq)
-    //     destroy_workqueue(my_wq);
-
-    // (Opzionale) Rimuovi la directory /snapshot (di solito non necessario)
-    // struct path path;
-    // if (!kern_path(SNAPSHOT_DIR_PATH, LOOKUP_DIRECTORY, &path)) {
-    //     vfs_rmdir(NULL, path.dentry->d_parent->d_inode, path.dentry);
-    //     path_put(&path);
-    // }
 
     printk(KERN_INFO "%s: snapshot_cleanup completed", MODNAME);
 }

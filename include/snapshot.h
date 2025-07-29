@@ -13,13 +13,21 @@
 *   Rappresenta un device montato su cui va eseguito lo snapshot
 *   @dev_name: nome del device;
 *   @dev: mantiene major/minor del device;
+*   @dir_path: path della directory in cui salvare i blocchi modificati;
+*   @block_bitmap: bitmap per i blocchi modificati: 0 se non modificato, 1 se modificato;
+*   @bitmap_size: dimensione della bitmap in bit;
 *   @list: list head per collegare device su cui eseguire snapshot;
+*   @rcu_head: campo per la rimozione asincrona;
 */
 struct mounted_dev {
     char dev_name[SNAPSHOT_DEV_NAME_LEN];
     dev_t dev;
+    char dir_path[MAX_PATH_LEN];
+    unsigned long *block_bitmap; // Bitmap per i blocchi modificati
+    size_t bitmap_size; // Dimensione della bitmap in byte
     struct list_head list;
     struct rcu_head rcu_head;
+    // todo flag deactivated per capire se all'unmount il device deve essere rimosso e non spostato in nonactive
 };
 
 /*
