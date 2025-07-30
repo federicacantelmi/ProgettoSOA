@@ -18,6 +18,8 @@
 *   @bitmap_size: dimensione della bitmap in bit;
 *   @list: list head per collegare device su cui eseguire snapshot;
 *   @rcu_head: campo per la rimozione asincrona;
+*   @deactivated: flag per indicare se è stato disattivato lo snapshot per quel device (allo smontaggio
+*       il device viene rimosso completamente, non spostato alla lista dei device non attivi);
 */
 struct mounted_dev {
     char dev_name[SNAPSHOT_DEV_NAME_LEN];
@@ -27,7 +29,7 @@ struct mounted_dev {
     size_t bitmap_size; // Dimensione della bitmap in byte
     struct list_head list;
     struct rcu_head rcu_head;
-    // todo flag deactivated per capire se all'unmount il device deve essere rimosso e non spostato in nonactive
+    bool deactivated;
 };
 
 /*

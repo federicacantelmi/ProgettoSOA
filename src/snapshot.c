@@ -91,18 +91,21 @@ int snapshot_remove_device(const char *dev_name) {
 
     struct mounted_dev *m;
 
-    // Prima controlla se il device è nella lista active
+    // Controlla se il device è nella lista dei device attivi
+    // Se sì, non può essere rimosso
     spin_lock(&active_devices_list_lock);
-    list_for_each_entry(m, &active_devices_list, list) {
+    list_for_each_entry_rcu(m, &active_devices_list, list) {
         if (strncmp(m->dev_name, dev_name, SNAPSHOT_DEV_NAME_LEN) == 0) {
+            // Se il device è montato, non può essere rimosso ma lo sarà allo smontaggio
+            m->deactivated = true;
             spin_unlock(&active_devices_list_lock);
-            printk(KERN_ERR "%s: cannot deactivate snapshot on device %s: device is still mounted", MODNAME, dev_name);
+            printk(KERN_INFO "%s: device %s is still mounted, snapshot will be deactivated", MODNAME, dev_name);
             return -EBUSY;
         }
     }
     spin_unlock(&active_devices_list_lock);
 
-    // Poi cerca e rimuovi dalla lista nonactive
+    // Poi cerca e rimuove dalla lista nonactive
     spin_lock(&nonactive_devices_list_lock);
     
     list_for_each_entry_safe(p, tmp, &nonactive_devices_list, list) {
@@ -118,7 +121,7 @@ int snapshot_remove_device(const char *dev_name) {
     }
 
     spin_unlock(&nonactive_devices_list_lock);
-    printk(KERN_ERR "%s: device %s not found in nonactive list", MODNAME, dev_name);
+    printk(KERN_ERR "%s: device %s not found in nonactive or active list", MODNAME, dev_name);
     return -ENOENT;
 }
 
@@ -297,7 +300,8 @@ int snapshot_handle_mount(super_block sb, const char *timestamp) {
 
 // todo handler unmount
 int snapshot_handle_unmount(dev_t dev) {
-    struct nonmounted_dev *n_dev, *p;
+    struct nonmounted_dev *n_dev = NULL;
+    struct nonmounted_dev *p;
     struct mounted_dev *m_dev;
     bool found = false;
     bool already_active = false;
@@ -322,15 +326,17 @@ int snapshot_handle_unmount(dev_t dev) {
 
     // se found => device ha abilitato snapshot
 
-    // Alloca elemento device active
-    n_dev = kmalloc(sizeof(*n_dev), GFP_ATOMIC);
-    if(!n_dev) {
-        printk(KERN_ERR "%s: kmalloc failed while handling unmount for device (%d, %d)", MODNAME, MAJOR(dev), MINOR(dev));
-        return -ENOMEM;
-    }
+    if (!m_dev->deactivated) {
+        // Alloca elemento device active
+        n_dev = kmalloc(sizeof(*n_dev), GFP_ATOMIC);
+        if(!n_dev) {
+            printk(KERN_ERR "%s: kmalloc failed while handling unmount for device (%d, %d)", MODNAME, MAJOR(dev), MINOR(dev));
+            return -ENOMEM;
+        }
 
-    strscpy(n_dev->dev_name, m_dev->dev_name, SNAPSHOT_DEV_NAME_LEN);
-    INIT_LIST_HEAD(&n_dev->list);
+        strscpy(n_dev->dev_name, m_dev->dev_name, SNAPSHOT_DEV_NAME_LEN);
+        INIT_LIST_HEAD(&n_dev->list);
+    }
 
     // Prende lock su lista active e lista non active
     spin_lock(&active_devices_list_lock);
@@ -371,7 +377,10 @@ int snapshot_handle_unmount(dev_t dev) {
         goto out_unlock_free;
     }
 
-    list_add_tail_rcu(&n_dev->list, &nonactive_devices_list);
+    if(!m_dev->deactivated) {
+        list_add_tail_rcu(&n_dev->list, &nonactive_devices_list);
+    }
+
     list_del_rcu(&m_dev->list);
 
     spin_unlock(&active_devices_list_lock);
@@ -383,7 +392,11 @@ int snapshot_handle_unmount(dev_t dev) {
 out_unlock_free:
     spin_unlock(&nonactive_devices_list_lock);
     spin_unlock(&active_devices_list_lock);
-    kfree(n_dev);
+
+    if (!m_dev->deactivated) {
+        kfree(n_dev);
+    }
+
     return ret;
 }
 
@@ -453,7 +466,7 @@ static int snapshot_handle_write(dev_t dev, sector_t block_nr, size_t size) {
     INIT_WORK(&work->work, snapshot_worker);
     // Aggiunge il lavoro alla workqueue
     schedule_work(&work->work);
-    
+
     printk(KERN_INFO "%s: scheduled work for block %llu on device (%d, %d)", MODNAME, (unsigned long long)block_nr, MAJOR(dev), MINOR(dev));
     return 0;
 }
