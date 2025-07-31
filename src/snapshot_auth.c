@@ -13,6 +13,8 @@
 
 #include "snapshot_auth.h"
 
+#define MODNAME "SNAPSHOT MOD"
+
 static struct salted_hash_psw_t salted_hash_psw;
 
 static int calculate_sha256(const char *password, const char *salt, unsigned char *output){
@@ -70,14 +72,14 @@ int check_auth(const char *password) {
 
     // verifica che utente sia root
     if(current_euid().val != 0) {
-        // Utente non root
+        printk(KERN_ERR "%s: only root can perform this operation\n", MODNAME);
        return -EPERM;
     }
 
     calculate_sha256(password, salted_hash_psw.salt, hash_output);
 
     if(memcmp(hash_output, salted_hash_psw.psw_hash, PSW_HASH_LEN) != 0) {
-        // Password errata
+        printk(KERN_ERR "%s: password does not match\n", MODNAME);
         return -EACCES;
     }
 

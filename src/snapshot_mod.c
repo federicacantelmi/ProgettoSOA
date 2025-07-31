@@ -29,7 +29,7 @@ int init_module(void) {
 
     printk("snapshot: 1\n");
     if (!snapshot_password) {
-        printk(KERN_ERR "No password passed");
+        printk(KERN_ERR "No password passed\n");
         return -EINVAL;
     }
 

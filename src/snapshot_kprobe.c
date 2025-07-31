@@ -26,13 +26,13 @@ static int kprobe_mount_bdev_handler(struct kretprobe_instance *kp, struct pt_re
     struct dentry *ret_dentry = (struct dentry *)regs_return_value(regs);
 
     if(!ret_dentry || IS_ERR(ret_dentry)) {
-        printk(KERN_ERR "%s: mount_bdev failed", MODNAME);
+        printk(KERN_ERR "%s: mount_bdev failed\n", MODNAME);
         return 0;
     }
 
     sb = ret_dentry->d_sb;
     if(!sb) {
-        printk(KERN_ERR "%s: superblock is null", MODNAME);
+        printk(KERN_ERR "%s: superblock is null\n", MODNAME);
         return 0;
     }
 
@@ -51,7 +51,7 @@ static int kprobe_mount_bdev_handler(struct kretprobe_instance *kp, struct pt_re
     ret = snapshot_handle_mount(sb, timestamp);
 
     if (ret < 0) {
-        printk(KERN_ERR "%s: snapshot_handle_mount failed for device with major=%d and minor=%d", MODNAME, MAJOR(sb->s_bdev->bd_dev), MINOR(sb->s_bdev->bd_dev));
+        printk(KERN_ERR "%s: snapshot_handle_mount failed for device with major=%d and minor=%d\n", MODNAME, MAJOR(sb->s_bdev->bd_dev), MINOR(sb->s_bdev->bd_dev));
     }
     return ret;
 }
@@ -90,7 +90,7 @@ static int kprobe_unmount_bdev_handler(struct kretprobe_instance *ri, struct pt_
     ret = snapshot_handle_unmount(dev);
 
     if (ret < 0) {
-        printk(KERN_ERR "%s: snapshot_handle_unmount failed for device (major=%d, minor=%d), error=%d", MODNAME, MAJOR(dev), MINOR(dev), ret);
+        printk(KERN_ERR "%s: snapshot_handle_unmount failed for device (major=%d, minor=%d), error=%d\n", MODNAME, MAJOR(dev), MINOR(dev), ret);
     }
 
     return ret;
@@ -109,21 +109,21 @@ static int kprobe_write_dirty_buffer_handler(struct kretprobe_instance *ri, stru
 
     bh = (struct buffer_head *)regs->di;
     if(!bh) {
-        printk(KERN_ERR "%s: buffer_head is null in write_dirty_buffer_handler", MODNAME);
+        printk(KERN_ERR "%s: buffer_head is null in write_dirty_buffer_handler\n", MODNAME);
         return 0;
     }
 
     b_blocknr = bh->b_blocknr;
     bdev = bh->b_bdev;
     if(!bdev) {
-        printk(KERN_ERR "%s: block_device is null in write_dirty_buffer_handler", MODNAME);
+        printk(KERN_ERR "%s: block_device is null in write_dirty_buffer_handler\n", MODNAME);
         return 0;
     }
     size = bh->b_size;
 
     ret = snapshot_handle_write(bdev, b_blocknr, size);
     if(ret < 0) {
-        printk(KERN_ERR "%s: snapshot_handle_write failed for device (major=%d, minor=%d), error=%d", MODNAME, MAJOR(bdev->bd_dev), MINOR(bdev->bd_dev), ret);
+        printk(KERN_ERR "%s: snapshot_handle_write failed for device (major=%d, minor=%d), error=%d\n", MODNAME, MAJOR(bdev->bd_dev), MINOR(bdev->bd_dev), ret);
         return ret;
     }
  
@@ -170,30 +170,30 @@ int kprobes_init(void) {
     ret = register_kretprobe(&kprobe_mount_bdev);
 
     if(ret) {
-        printk(KERN_ERR "%s: register_kretprobe for mount_bdev failed, error=%d", MODNAME, ret);
+        printk(KERN_ERR "%s: register_kretprobe for mount_bdev failed, error=%d\n", MODNAME, ret);
         return ret;
     }
-    printk(KERN_INFO "%s: kprobe_mount_bdev registered successfully", MODNAME);
+    printk(KERN_INFO "%s: kprobe_mount_bdev registered successfully\n", MODNAME);
 
     ret = register_kretprobe(&kprobe_unmount_bdev);
 
     if(ret) {
-        printk(KERN_ERR "%s: register_kretprobe for unmount_bdev failed, error=%d", MODNAME, ret);
+        printk(KERN_ERR "%s: register_kretprobe for unmount_bdev failed, error=%d\n", MODNAME, ret);
         unregister_kretprobe(&kprobe_mount_bdev);
         return ret;
     }
 
-    printk(KERN_INFO "%s: kprobe_unmount_bdev registered successfully", MODNAME);
+    printk(KERN_INFO "%s: kprobe_unmount_bdev registered successfully\n", MODNAME);
 
     ret = register_kretprobe(&kprobe_write_dirty_buffer);
     if(ret) {
-        printk(KERN_ERR "%s: register_kretprobe for write_dirty_buffer failed, error=%d", MODNAME, ret);
+        printk(KERN_ERR "%s: register_kretprobe for write_dirty_buffer failed, error=%d\n", MODNAME, ret);
         unregister_kretprobe(&kprobe_mount_bdev);
         unregister_kretprobe(&kprobe_unmount_bdev);
         return ret;
     }
 
-    printk(KERN_INFO "%s: kprobe_write_dirty_buffer registered successfully", MODNAME);
+    printk(KERN_INFO "%s: kprobe_write_dirty_buffer registered successfully\n", MODNAME);
 
     return 0;
 }
@@ -206,5 +206,5 @@ void kprobes_cleanup(void) {
     unregister_kretprobe(&kprobe_mount_bdev);
     unregister_kretprobe(&kprobe_unmount_bdev);
     unregister_kretprobe(&kprobe_write_dirty_buffer);
-    printk(KERN_INFO "%s: kprobes cleaned up successfully", MODNAME);
+    printk(KERN_INFO "%s: kprobes cleaned up successfully\n", MODNAME);
 }
