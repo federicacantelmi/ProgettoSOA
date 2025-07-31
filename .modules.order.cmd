@@ -1,0 +1,1 @@
+savedcmd_/home/feder/Desktop/ProgettoSOA/ProgettoSOA/modules.order := {   echo /home/feder/Desktop/ProgettoSOA/ProgettoSOA/snapshot_mod.o; :; } > /home/feder/Desktop/ProgettoSOA/ProgettoSOA/modules.order

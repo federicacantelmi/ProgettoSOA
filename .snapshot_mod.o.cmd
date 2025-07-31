@@ -1,0 +1,1 @@
+savedcmd_/home/feder/Desktop/ProgettoSOA/ProgettoSOA/snapshot_mod.o := ld -m elf_x86_64 -z noexecstack   -r -o /home/feder/Desktop/ProgettoSOA/ProgettoSOA/snapshot_mod.o @/home/feder/Desktop/ProgettoSOA/ProgettoSOA/snapshot_mod.mod 

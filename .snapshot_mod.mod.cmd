@@ -1,0 +1,1 @@
+savedcmd_/home/feder/Desktop/ProgettoSOA/ProgettoSOA/snapshot_mod.mod := printf '%s\n'   src/snapshot_auth.o src/snapshot_mod.o src/snapshot_api_dev.o src/snapshot_api.o src/snapshot.o src/snapshot_kprobe.o | awk '!x[$$0]++ { print("/home/feder/Desktop/ProgettoSOA/ProgettoSOA/"$$0) }' > /home/feder/Desktop/ProgettoSOA/ProgettoSOA/snapshot_mod.mod

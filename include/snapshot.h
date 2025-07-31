@@ -3,6 +3,7 @@
 
 #include <linux/list.h>
 #include <linux/types.h>
+#include <linux/buffer_head.h>
 
 #define MAX_DEVICES 32
 #define SNAPSHOT_DEV_NAME_LEN 128
@@ -46,12 +47,10 @@ struct nonmounted_dev {
 
 int snapshot_add_device(const char *);
 int snapshot_remove_device(const char *);
-int snapshot_handle_mount(const char *, dev_t, const char *);
+int snapshot_handle_mount(struct super_block *, const char *);
 int snapshot_handle_unmount(dev_t);
+int snapshot_handle_write(struct block_device *, sector_t, size_t);
 int snapshot_init(void);
 void snapshot_cleanup(void);
-
-
-
 
 #endif // SNAPSHOT_H
