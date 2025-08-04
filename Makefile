@@ -1,3 +1,5 @@
+MODE ?= ASYNC
+
 obj-m += snapshot_mod.o
 snapshot_mod-objs := \
 	src/snapshot_auth.o \
@@ -8,6 +10,14 @@ snapshot_mod-objs := \
 	src/snapshot_kprobe.o
 
 EXTRA_CFLAGS := -I$(PWD)/include
+
+ifeq ($(MODE),ASYNC)
+	EXTRA_CFLAGS += -DSNAPSHOT_ASYNC
+else ifeq ($(MODE),SYNC)
+	EXTRA_CFLAGS += -DSNAPSHOT_SYNC
+else
+	$(error Invalid mode specified. Use MODE=ASYNC or MODE=SYNC)
+endif
 
 KDIR := /lib/modules/$(shell uname -r)/build
 PWD := $(shell pwd)

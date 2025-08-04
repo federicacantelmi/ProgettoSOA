@@ -18,21 +18,21 @@
 int activate_snapshot(const char *dev_name, const char *password) {
 
     if(!check_auth(password)) {
-        printk(KERN_ERR "%s: authentication failed for device %s\n", MODNAME, dev_name);
+        printk(KERN_ERR "%s: authentication failed\n", MODNAME);
         return -EACCES;
     }
 
-    printk(KERN_INFO "%s: authentication successful for device %s\n", MODNAME, dev_name);
+    printk(KERN_INFO "%s: authentication successful\n", MODNAME);
     return snapshot_add_device(dev_name);
 }
 
 int deactivate_snapshot(const char *dev_name, const char *password) {
 
     if(!check_auth(password)) {
-        printk(KERN_ERR "%s: authentication failed for device %s\n", MODNAME, dev_name);
+        printk(KERN_ERR "%s: authentication failed\n", MODNAME);
         return -EACCES;
     }
 
-    printk(KERN_INFO "%s: authentication successful for device %s\n", MODNAME, dev_name);
+    printk(KERN_INFO "%s: authentication successful\n", MODNAME);
     return snapshot_remove_device(dev_name);
 }

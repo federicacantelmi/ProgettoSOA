@@ -40,6 +40,7 @@ __used __section("__versions") = {
 	{ 0x8d522714, "__rcu_read_lock" },
 	{ 0x656e4a6e, "snprintf" },
 	{ 0xc5b6f236, "queue_work_on" },
+	{ 0x1fc34ff, "class_destroy" },
 	{ 0x69acdf38, "memcpy" },
 	{ 0x37a0cba, "kfree" },
 	{ 0x71ba2490, "pcpu_hot" },
@@ -52,13 +53,13 @@ __used __section("__versions") = {
 	{ 0x122c3a7e, "_printk" },
 	{ 0xf0fdf6cb, "__stack_chk_fail" },
 	{ 0xa916b694, "strnlen" },
-	{ 0xf0914569, "__brelse" },
 	{ 0x2469810f, "__rcu_read_unlock" },
+	{ 0xf4ee463a, "device_create" },
+	{ 0xc74fa6a1, "class_create" },
 	{ 0x4c03a563, "random_kmalloc_seed" },
 	{ 0x5a921311, "strncmp" },
 	{ 0x87b77d87, "unregister_kretprobe" },
 	{ 0x9166fada, "strncpy" },
-	{ 0x8255d16e, "__bread_gfp" },
 	{ 0x65929cae, "ns_to_timespec64" },
 	{ 0xfb578fc5, "memset" },
 	{ 0x8e50f680, "kern_path" },
@@ -70,6 +71,7 @@ __used __section("__versions") = {
 	{ 0x55c48a5a, "crypto_shash_final" },
 	{ 0xeaa78587, "filp_close" },
 	{ 0xf4cc6a9a, "__register_chrdev" },
+	{ 0x3c06c15f, "device_destroy" },
 	{ 0xfff5afc, "time64_to_tm" },
 	{ 0x984866c0, "register_kretprobe" },
 	{ 0x41ed3709, "get_random_bytes" },
@@ -83,6 +85,7 @@ __used __section("__versions") = {
 	{ 0x37a99944, "kmalloc_caches" },
 	{ 0xb2c57545, "kernel_write" },
 	{ 0x2d3385d3, "system_wq" },
+	{ 0x769e5cc7, "d_path" },
 	{ 0x6bc3fbc0, "__unregister_chrdev" },
 	{ 0xc6227e48, "module_layout" },
 };
@@ -90,4 +93,4 @@ __used __section("__versions") = {
 MODULE_INFO(depends, "");
 
 
-MODULE_INFO(srcversion, "D1BF8F7C7D83303E9D74183");
+MODULE_INFO(srcversion, "B018BD55BCF7E508E68D8CC");
