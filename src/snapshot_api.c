@@ -17,7 +17,9 @@
 
 int activate_snapshot(const char *dev_name, const char *password) {
 
-    if(!check_auth(password)) {
+    int ret;
+    ret = check_auth(password);
+    if (ret < 0) {
         printk(KERN_ERR "%s: authentication failed\n", MODNAME);
         return -EACCES;
     }
@@ -28,7 +30,9 @@ int activate_snapshot(const char *dev_name, const char *password) {
 
 int deactivate_snapshot(const char *dev_name, const char *password) {
 
-    if(!check_auth(password)) {
+    int ret;
+    ret = check_auth(password);
+    if (ret < 0) {
         printk(KERN_ERR "%s: authentication failed\n", MODNAME);
         return -EACCES;
     }

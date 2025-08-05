@@ -140,7 +140,6 @@ static int kprobe_modify_block_handler(struct kretprobe_instance *ri, struct pt_
 #ifdef SNAPSHOT_ASYNC
 static int kprobe_post_modify_block_handler(struct kretprobe_instance *ri, struct pt_regs *regs) {
     struct buffer_head *bh;
-    struct block_device *bdev;
     int ret;
 
     bh = (struct buffer_head *)regs->di;
@@ -151,7 +150,7 @@ static int kprobe_post_modify_block_handler(struct kretprobe_instance *ri, struc
 
     ret = snapshot_modify_block(bh);
     if(ret < 0) {
-        printk(KERN_ERR "%s: snapshot_modify_block failed for device (major=%d, minor=%d), error=%d\n", MODNAME, MAJOR(bdev->bd_dev), MINOR(bdev->bd_dev), ret);
+        printk(KERN_ERR "%s: snapshot_modify_block failed, error=%d\n", MODNAME, ret);
     }
 
     return 0;

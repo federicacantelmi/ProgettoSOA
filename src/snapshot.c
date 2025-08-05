@@ -48,7 +48,6 @@ struct packed_work {
 */
 static void free_device_nm_rcu(struct rcu_head *rcu) {
     struct nonmounted_dev *p = container_of(rcu, struct nonmounted_dev, rcu_head);
-    kfree(p->dev_name);
     kfree(p);
 }
 
@@ -58,7 +57,6 @@ static void free_device_nm_rcu(struct rcu_head *rcu) {
 */
 static void free_device_m_rcu(struct rcu_head *rcu) {
     struct mounted_dev *p = container_of(rcu, struct mounted_dev, rcu_head);
-    kfree(p->dev_name);
     kfree(p->dir_path);
     kfree(p->block_bitmap);
     kfree(p);
@@ -66,10 +64,15 @@ static void free_device_m_rcu(struct rcu_head *rcu) {
 
 static char *get_name(struct block_device *bdev) {
 
-    static char d_name[SNAPSHOT_DEV_NAME_LEN];
+    char *d_name = kmalloc(SNAPSHOT_DEV_NAME_LEN, GFP_KERNEL);
+    if (!d_name) {
+        printk(KERN_ERR "%s: Failed to allocate memory for device name\n", MODNAME);
+        return NULL;
+    }
 
     if(!bdev || !bdev->bd_disk) {
         printk(KERN_ERR "%s: block device or disk is null in get_name\n", MODNAME);
+        kfree(d_name);
         return NULL;
     }
 
@@ -79,20 +82,22 @@ static char *get_name(struct block_device *bdev) {
         struct loop_device *ldev = (struct loop_device *)bdev->bd_disk->private_data;
         if(!ldev) {
             printk(KERN_ERR "%s: loop_device is null in snapshot_handle_mount\n", MODNAME);
+            kfree(d_name);
             return NULL;
         }
         struct file *file = ldev->lo_backing_file;
         if(!file) {
             printk(KERN_ERR "%s: backing file is null in snapshot_handle_mount\n", MODNAME);
+            kfree(d_name);
             return NULL;
         }
         char *tmp = d_path(&file->f_path, d_name, SNAPSHOT_DEV_NAME_LEN);
         if (IS_ERR(tmp)) {
             printk(KERN_ERR "%s: d_path failed in snapshot_handle_mount\n", MODNAME);
+            kfree(d_name);
             return NULL;
         }
         snprintf(d_name, SNAPSHOT_DEV_NAME_LEN, "%s", tmp);
-        kfree(tmp);
     }
 
     return d_name;
@@ -112,7 +117,7 @@ int snapshot_add_device(const char *dev_name) {
         return -ENOMEM;
     }
 
-    strncpy(new_dev->dev_name, dev_name,SNAPSHOT_DEV_NAME_LEN);
+    strscpy(new_dev->dev_name, dev_name,SNAPSHOT_DEV_NAME_LEN);
     INIT_LIST_HEAD(&new_dev->list);
     new_dev->rcu_head = (struct rcu_head){0};
 
@@ -205,7 +210,9 @@ int snapshot_handle_mount(struct dentry *dentry, const char *timestamp) {
         return -EINVAL;
     }
 
-    strncpy(d_name, name, SNAPSHOT_DEV_NAME_LEN);
+    strscpy(d_name, name, SNAPSHOT_DEV_NAME_LEN);
+
+    kfree(name);
 
     printk(KERN_INFO "%s: mount_bdev success\n", MODNAME);
 
@@ -249,15 +256,30 @@ int snapshot_handle_mount(struct dentry *dentry, const char *timestamp) {
         return -ENOENT;
     }
 
-    // Crea nuova sottodirectory
-    dentry_ret = kern_path_create(AT_FDCWD, dir_path, NULL, 0);
+    // Crea path per la nuova sottodirectory
+    dentry_ret = kern_path_create(AT_FDCWD, dir_path, &path, 0);
     if (IS_ERR(dentry_ret)) {
         ret = PTR_ERR(dentry_ret);
         if (ret != -EEXIST) {
             printk(KERN_ERR "%s: failed to create snapshot subdirectory (%d)\n", MODNAME, ret);
+            kfree(dir_path);
             return ret;
         }
+        // La directory già esiste, non serve crearla
+        goto exists;
     }
+
+    // Crea la sottodirectory
+    ret = vfs_mkdir(NULL, dentry_ret->d_inode, dentry_ret, 0755);
+    if (ret && ret != -EEXIST) {
+        printk(KERN_ERR "%s: failed to create snapshot subdirectory (%d)\n", MODNAME, ret);
+        done_path_create(&path, dentry_ret);
+        return ret;
+    }
+    
+    done_path_create(&path, dentry_ret);
+
+exists:
 
     // Alloca elemento device active
     m_dev = kmalloc(sizeof(*m_dev), GFP_ATOMIC);
@@ -304,11 +326,11 @@ int snapshot_handle_mount(struct dentry *dentry, const char *timestamp) {
         spin_lock_init(&m_dev->block_list_lock);
     #endif
 
-    m_dev->deactivated = false;
-
     // Prende lock su lista active e lista non active
     spin_lock(&mounted_devices_list_lock);
     spin_lock(&nonmounted_devices_list_lock);
+
+    m_dev->deactivated = false;
 
     // Controlla ancora se device è nella lista non active (potrei avere mount concorrente che nel frattempo lo ha spostato di lista)
     found = false;
@@ -379,7 +401,9 @@ int snapshot_handle_unmount(struct block_device *bdev) {
         return -EINVAL;
     }
 
-    strncpy(d_name, name, SNAPSHOT_DEV_NAME_LEN);  
+    strscpy(d_name, name, SNAPSHOT_DEV_NAME_LEN);
+
+    kfree(name);
 
     // Cerca il dev nella lista dei device attivi
     rcu_read_lock();
@@ -400,6 +424,12 @@ int snapshot_handle_unmount(struct block_device *bdev) {
 
     // se found => device ha abilitato snapshot
 
+    // Prende lock su lista active e lista non active
+    spin_lock(&mounted_devices_list_lock);
+    spin_lock(&nonmounted_devices_list_lock);
+
+    // Dentro lock perché deactivated deve essere modificato in maniera atomica
+    // Se deactivated è false, significa che il device va spostato nella lista dei non attivi, altrimenti va eliminato da entrambe
     if (!m_dev->deactivated) {
         // Alloca elemento device active
         n_dev = kmalloc(sizeof(*n_dev), GFP_ATOMIC);
@@ -411,10 +441,6 @@ int snapshot_handle_unmount(struct block_device *bdev) {
         strscpy(n_dev->dev_name, m_dev->dev_name, SNAPSHOT_DEV_NAME_LEN);
         INIT_LIST_HEAD(&n_dev->list);
     }
-
-    // Prende lock su lista active e lista non active
-    spin_lock(&mounted_devices_list_lock);
-    spin_lock(&nonmounted_devices_list_lock);
 
     // Controllo ancora se device è nella lista active (potrei avere unmount concorrente che nel frattempo lo ha spostato di lista)
     found = false;
@@ -475,12 +501,13 @@ int snapshot_handle_unmount(struct block_device *bdev) {
     return 0;
 
 out_unlock_free:
-    spin_unlock(&nonmounted_devices_list_lock);
-    spin_unlock(&mounted_devices_list_lock);
 
     if (!m_dev->deactivated) {
-        kfree(n_dev);
+            kfree(n_dev);
     }
+
+    spin_unlock(&nonmounted_devices_list_lock);
+    spin_unlock(&mounted_devices_list_lock);    
 
     return ret;
 }
@@ -494,7 +521,7 @@ out_unlock_free:
 static void snapshot_worker(struct work_struct *work) {
     struct packed_work *my_work = container_of(work, struct packed_work, work);
     char dev_name[SNAPSHOT_DEV_NAME_LEN];
-    strncpy(dev_name, my_work->dev_name, SNAPSHOT_DEV_NAME_LEN);
+    strscpy(dev_name, my_work->dev_name, SNAPSHOT_DEV_NAME_LEN);
     sector_t block_nr = my_work->block_nr;
     size_t size = my_work->size;
     char *data = my_work->data;
@@ -573,7 +600,9 @@ int snapshot_modify_block(struct buffer_head *bh) {
         return -EINVAL;
     }
 
-    strncpy(d_name, name, SNAPSHOT_DEV_NAME_LEN);
+    strscpy(d_name, name, SNAPSHOT_DEV_NAME_LEN);
+
+    kfree(name);
 
     block_nr = bh->b_blocknr;
 
@@ -617,7 +646,7 @@ int snapshot_modify_block(struct buffer_head *bh) {
             }
 
             // Imposta i campi del work item
-            strncpy(work->dev_name, d_name, SNAPSHOT_DEV_NAME_LEN);
+            strscpy(work->dev_name, d_name, SNAPSHOT_DEV_NAME_LEN);
             work->block_nr = bh->b_blocknr;
             work->size = bh->b_size;
             work->data = blk->data; // usa i dati del blocco
@@ -683,7 +712,9 @@ int snapshot_handle_write(struct buffer_head *bh) {
         return -EINVAL;
     }
 
-    strncpy(d_name, name, SNAPSHOT_DEV_NAME_LEN);
+    strscpy(d_name, name, SNAPSHOT_DEV_NAME_LEN);
+
+    kfree(name);
 
     size = bh->b_size;
     if (size > PAGE_SIZE) {
@@ -724,7 +755,7 @@ int snapshot_handle_write(struct buffer_head *bh) {
         return -ENOMEM;
     }
 
-    work->dev_name = d_name;
+    strscpy(work->dev_name, d_name, SNAPSHOT_DEV_NAME_LEN);
     work->block_nr = block_nr;
     work->size = size;
     work->data = kmalloc(size, GFP_ATOMIC);
@@ -822,7 +853,9 @@ int snapshot_handle_write(struct buffer_head *bh) {
         return -EINVAL;
     }
 
-    strncpy(d_name, name, SNAPSHOT_DEV_NAME_LEN);
+    strscpy(d_name, name, SNAPSHOT_DEV_NAME_LEN);
+
+    kfree(name);
 
     size = bh->b_size;
     block_nr = bh->b_blocknr;
@@ -929,6 +962,8 @@ void snapshot_cleanup(void) {
 
     }
     spin_unlock(&mounted_devices_list_lock);
+
+    rcu_barrier(); // Aspetta che tutte le callback RCU siano terminate
 
     printk(KERN_INFO "%s: snapshot_cleanup completed\n", MODNAME);
 }

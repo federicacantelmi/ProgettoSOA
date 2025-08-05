@@ -27,27 +27,26 @@ MODULE_PARM_DESC(snapshot_password, "Password for snapshot authentication");
 int init_module(void) {
     int ret;
 
-    printk("snapshot: 1\n");
+    printk(KERN_INFO "%s: 1\n", MODNAME);
     if (!snapshot_password) {
-        printk(KERN_ERR "No password passed\n");
+        printk(KERN_ERR "%s: No password passed\n", MODNAME);
         return -EINVAL;
     }
 
-    printk("snapshot: 2\n");
+    printk(KERN_INFO "%s: 2\n", MODNAME);
     // inizializzazione sistema auth
     ret = auth_init(snapshot_password);
     if(ret) {
-        printk("%s: failed to initialize auth system\n", MODNAME);
+        printk(KERN_ERR "%s: failed to initialize auth system\n", MODNAME);
         return ret;
     }
-    printk("snapshot: 3\n");
+    printk(KERN_INFO "%s: 3\n", MODNAME);
     // memset(snapshot_password, 0, strlen(snapshot_password));
 
-    
-    printk("snapshot: 4\n");
+    printk(KERN_INFO "%s: 4\n", MODNAME);
     // registrazione char device
     ret = dev_init();
-    printk("snapshot: 5\n");
+    printk(KERN_INFO "%s: 5\n", MODNAME);
     if(ret < 0) {
         cleanup_auth();
         printk(KERN_ERR "%s: dev_init failed\n", MODNAME);
@@ -76,7 +75,7 @@ int init_module(void) {
     }
 
 
-    printk(KERN_INFO "Modulo snapshot: caricamento riuscito\n");
+    printk(KERN_INFO "%s: caricamento riuscito\n", MODNAME);
 
     return 0;
 }
@@ -96,7 +95,7 @@ void cleanup_module(void) {
     // cleanup kprobes
     kprobes_cleanup();
 
-    printk(KERN_INFO "Modulo snapshot: rimozione riuscita\n");
+    printk(KERN_INFO "%s: rimozione riuscita\n", MODNAME);
 
 
 }

@@ -69,6 +69,7 @@ static int calculate_sha256(const char *password, const char *salt, unsigned cha
 int check_auth(const char *password) {
 
     unsigned char hash_output[PSW_HASH_LEN];
+    int ret;
 
     // verifica che utente sia root
     if(current_euid().val != 0) {
@@ -76,7 +77,11 @@ int check_auth(const char *password) {
        return -EPERM;
     }
 
-    calculate_sha256(password, salted_hash_psw.salt, hash_output);
+    ret = calculate_sha256(password, salted_hash_psw.salt, hash_output);
+    if (ret < 0) {
+        printk(KERN_ERR "%s: error calculating hash (err=%d)\n", MODNAME, ret);
+        return ret;
+    }
 
     if(memcmp(hash_output, salted_hash_psw.psw_hash, PSW_HASH_LEN) != 0) {
         printk(KERN_ERR "%s: password does not match\n", MODNAME);
@@ -99,6 +104,10 @@ int auth_init(const char *password) {
         return -EINVAL;
     }
 
+    // copia hash nella struttura
+    memcpy(salted_hash_psw.psw_hash, hash_output, PSW_HASH_LEN);
+    printk(KERN_INFO "%s: password hash initialized successfully\n", MODNAME);
+    
     return 0;
     
 }
