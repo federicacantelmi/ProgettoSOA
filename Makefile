@@ -9,12 +9,12 @@ snapshot_mod-objs := \
 	src/snapshot.o \
 	src/snapshot_kprobe.o
 
-EXTRA_CFLAGS := -I$(PWD)/include
+ccflags-y := -I$(PWD)/include
 
 ifeq ($(MODE),ASYNC)
-	EXTRA_CFLAGS += -DSNAPSHOT_ASYNC
+	ccflags-y += -DSNAPSHOT_ASYNC
 else ifeq ($(MODE),SYNC)
-	EXTRA_CFLAGS += -DSNAPSHOT_SYNC
+	ccflags-y += -DSNAPSHOT_SYNC
 else
 	$(error Invalid mode specified. Use MODE=ASYNC or MODE=SYNC)
 endif
@@ -26,7 +26,8 @@ PWD := $(shell pwd)
 PASSW ?=
 
 all:
-	$(MAKE) -C $(KDIR) M=$(PWD) modules
+	$(MAKE) -C $(KDIR) M=$(PWD) modules \
+          ccflags-y="$(ccflags-y)"
 
 install:
 	@if [ -z "$(PASSW)" ]; then \

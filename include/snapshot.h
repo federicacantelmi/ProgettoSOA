@@ -40,10 +40,10 @@ struct mounted_dev {
     struct list_head list;
     struct rcu_head rcu_head;
     bool deactivated;
-#ifdef SNAPSHOT_ASYNC
-    struct list_head block_list;
-    spinlock_t block_list_lock;
-#endif
+// #ifdef SNAPSHOT_ASYNC
+//     struct list_head block_list;
+//     spinlock_t block_list_lock;
+// #endif
 };
 
 /*
@@ -61,9 +61,10 @@ struct nonmounted_dev {
 int snapshot_add_device(const char *);
 int snapshot_remove_device(const char *);
 int snapshot_handle_mount(struct dentry *, const char *);
-int snapshot_handle_unmount(struct block_device *);
-int snapshot_handle_write(struct buffer_head *);
-int snapshot_modify_block(struct buffer_head *);
+int snapshot_pre_handle_umount(struct block_device *, char *);
+int snapshot_handle_unmount(char *);
+// int snapshot_handle_write(struct buffer_head *);
+// int snapshot_modify_block(struct buffer_head *);
 int snapshot_init(void);
 void snapshot_cleanup(void);
 
