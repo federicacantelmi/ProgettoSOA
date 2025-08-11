@@ -11,14 +11,6 @@
 
 #define MODNAME "SNAPSHOT MOD"
 
-#define SNAPSHOT_SYNC
-
-#ifdef SNAPSHOT_SYNC
-    #define PROBE_TARGET "write_dirty_buffer"
-#else
-    #define PROBE_TARGET "__bread_gfp"
-#endif
-
 /*
 *   Handler della kretprobe per la mount_bdev.
 *   Usa kretprobe così la mount_bdev termina e si può controllare se ha avuto successo
@@ -115,58 +107,74 @@ static int kprobe_unmount_bdev_handler(struct kretprobe_instance *ri, struct pt_
     return ret;
 }
 
-
-/*
-*   Funzione che gestisce la scrittura di un blocco modificato.
-*/
-/*
-static int kprobe_modify_block_handler(struct kretprobe_instance *ri, struct pt_regs *regs) {
-    struct buffer_head *bh;
+static int kprobe_pre_modify_block_handler(struct kretprobe_instance *ri, struct pt_regs *regs) {
+    struct buffer_head *bh = (struct buffer_head *)regs_return_value(regs);
     int ret;
 
-    bh = (struct buffer_head *)regs->di;
     if(!bh) {
-        printk(KERN_ERR "%s: buffer_head is null in write_dirty_buffer_handler\n", MODNAME);
+        printk(KERN_INFO "%s: buffer_head is null in kprobe_pre_modify_block_handler\n", MODNAME);
+        return 0;
+    }
+    if(!bh->b_bdev) {
+        printk(KERN_INFO "%s: buffer_head has no block device in kprobe_pre_modify_block_handler\n", MODNAME);
         return 0;
     }
 
-#ifdef SNAPSHOT_SYNC
-    if(buffer_dirty(bh)) {
-        printk(KERN_INFO "%s: buffer is dirty\n", MODNAME);
-        return 0;
-    }
-#endif
+    printk(KERN_INFO "%s: pre_modify_block_handler called for buffer_head at block %llu\n", MODNAME, (unsigned long long)bh->b_blocknr);
 
-    ret = snapshot_handle_write(bh);
-    if(ret < 0) {
-        printk(KERN_ERR "%s: snapshot_handle_write failed, error=%d\n", MODNAME, ret);
+    ret = snapshot_add_block(bh);
+    if (ret < 0) {
+        printk(KERN_ERR "%s: snapshot_add_block failed for buffer_head at block %llu, error=%d\n", MODNAME, (unsigned long long)bh->b_blocknr, ret);
         return ret;
     }
- 
+
+    printk(KERN_INFO "%s: pre_modify_block_handler completed successfully for buffer_head at block %llu\n", MODNAME, (unsigned long long)bh->b_blocknr);
     return 0;
 }
 
-#ifdef SNAPSHOT_ASYNC
-static int kprobe_post_modify_block_handler(struct kretprobe_instance *ri, struct pt_regs *regs) {
-    struct buffer_head *bh;
-    int ret;
+static int entry_kprobe_post_modify_block_handler(struct kretprobe_instance *ri, struct pt_regs *regs) {
+    struct buffer_head *bh = (struct buffer_head *)regs->di;
 
-    bh = (struct buffer_head *)regs->di;
     if(!bh) {
-        printk(KERN_ERR "%s: buffer_head is null in write_dirty_buffer_handler\n", MODNAME);
+        printk(KERN_INFO "%s: buffer_head is null in entry_kprobe_post_modify_block_handler\n", MODNAME);
+        return 0;
+    }
+    if(!bh->b_bdev) {
+        printk(KERN_INFO "%s: buffer_head has no block device in entry_kprobe_post_modify_block_handler\n", MODNAME);
         return 0;
     }
 
-    ret = snapshot_modify_block(bh);
-    if(ret < 0) {
-        printk(KERN_ERR "%s: snapshot_modify_block failed, error=%d\n", MODNAME, ret);
+    memcpy(ri->data, &bh, sizeof(struct buffer_head *)); 
+
+    printk(KERN_INFO "%s: entry_post_modify_block_handler called for buffer_head at block %llu\n", MODNAME, (unsigned long long)bh->b_blocknr);
+    return 0;
+}
+
+static int ret_kprobe_post_modify_block_handler(struct kretprobe_instance *ri, struct pt_regs *regs) {
+
+    struct buffer_head *bh;
+    memcpy(&bh, ri->data, sizeof(struct buffer_head *));
+    if(!bh) {
+        printk(KERN_INFO "%s: buffer_head is null in ret_kprobe_post_modify_block_handler\n", MODNAME);
+        return 0;
     }
+    if(!bh->b_bdev) {
+        printk(KERN_INFO "%s: buffer_head has no block device in ret_kprobe_post_modify_block_handler\n", MODNAME);
+        return 0;
+    }
+
+    printk(KERN_INFO "%s: post_modify_block_handler called for buffer_head at block %llu\n", MODNAME, (unsigned long long)bh->b_blocknr);
+
+    int ret = snapshot_save_block(bh);
+    if (ret < 0) {
+        printk(KERN_ERR "%s: snapshot_save_block failed for buffer_head at block %llu, error=%d\n", MODNAME, (unsigned long long)bh->b_blocknr, ret);
+        return ret;
+    }
+    printk(KERN_INFO "%s: post_modify_block_handler completed successfully for buffer_head at block %llu\n", MODNAME, (unsigned long long)bh->b_blocknr);
 
     return 0;
 }
-#endif // SNAPSHOT_ASYNC
 
-*/
 
 /*
 *   Struttura kretprobe per intercettare mount_bdev e gestire il mount di un device
@@ -191,24 +199,29 @@ static struct kretprobe kprobe_unmount_bdev = {
 /*
 *   Struttura kretprobe per gestire la modifica di un blocco.
 */
-/*
-static struct kretprobe kprobe_modify_block = {
-    .kp.symbol_name = PROBE_TARGET,
-    #ifdef SNAPSHOT_SYNC
-        .entry_handler = kprobe_modify_block_handler,
-    #elif SNAPSHOT_ASYNC
-        .handler = kprobe_modify_block_handler,
-    #endif
+
+static struct kretprobe kprobe_pre_modify_block = {
+    .kp.symbol_name = "__bread_gfp",
+    .handler = kprobe_pre_modify_block_handler,
 };
 
-#ifdef SNAPSHOT_ASYNC
 static struct kretprobe kprobe_post_modify_block = {
     .kp.symbol_name = "write_dirty_buffer",
-    .handler = kprobe_post_modify_block_handler,
+    .entry_handler = entry_kprobe_post_modify_block_handler,
+    .handler = ret_kprobe_post_modify_block_handler,
+    .data_size = sizeof(struct buffer_head *),
 };
-#endif // SNAPSHOT_ASYNC
 
-*/
+
+// #ifdef USE_WDB
+// static struct kretprobe kprobe_block_modified = {
+//     .kp.symbol_name = "blk_mq_submit_bio",
+//     .entry_handler = kprobe_block_modified_handler,
+// };
+// #endif // USE_WDB
+
+
+
 
 /*
 *   Registrazione kretprobes
@@ -232,7 +245,27 @@ int kprobes_init(void) {
     }
 
     printk(KERN_INFO "%s: kprobe_unmount_bdev registered successfully\n", MODNAME);
-/*
+    
+    ret = register_kretprobe(&kprobe_pre_modify_block);
+    if(ret) {
+        printk(KERN_ERR "%s: register_kretprobe for block_modified failed, error=%d\n", MODNAME, ret);
+        unregister_kretprobe(&kprobe_mount_bdev);
+        unregister_kretprobe(&kprobe_unmount_bdev);
+        return ret;
+    }
+    printk(KERN_INFO "%s: kprobe_block_modified registered successfully\n", MODNAME);
+
+    ret = register_kretprobe(&kprobe_post_modify_block);
+    if(ret) {
+        printk(KERN_ERR "%s: register_kretprobe for post_modify_block failed, error=%d\n", MODNAME, ret);
+        unregister_kretprobe(&kprobe_mount_bdev);
+        unregister_kretprobe(&kprobe_unmount_bdev);
+        unregister_kretprobe(&kprobe_pre_modify_block);
+        return ret;
+    }
+    printk(KERN_INFO "%s: kprobe_post_modify_block registered successfully\n", MODNAME);
+
+    /*
     ret = register_kretprobe(&kprobe_modify_block);
     if(ret) {
         printk(KERN_ERR "%s: register_kretprobe for modify_block failed, error=%d\n", MODNAME, ret);
@@ -266,11 +299,8 @@ int kprobes_init(void) {
 void kprobes_cleanup(void) {
     unregister_kretprobe(&kprobe_mount_bdev);
     unregister_kretprobe(&kprobe_unmount_bdev);
-//     unregister_kretprobe(&kprobe_modify_block);
-
-// #ifdef SNAPSHOT_ASYNC
-//     unregister_kretprobe(&kprobe_post_modify_block);
-// #endif // SNAPSHOT_ASYNC
+    unregister_kretprobe(&kprobe_pre_modify_block);
+    unregister_kretprobe(&kprobe_post_modify_block);
 
     printk(KERN_INFO "%s: kprobes cleaned up successfully\n", MODNAME);
 }

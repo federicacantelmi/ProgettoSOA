@@ -10,7 +10,7 @@
 #define SNAPSHOT_DIR_PATH "/snapshot"
 #define MAX_PATH_LEN 256
 
-#ifdef SNAPSHOT_ASYNC
+//#ifdef SNAPSHOT_ASYNC
 struct block {
     sector_t block_nr;
     struct block_device *bdev;
@@ -18,7 +18,7 @@ struct block {
     size_t size;
     struct list_head list;
 };
-#endif
+//#endif
 
 /*
 *   Rappresenta un device montato su cui va eseguito lo snapshot
@@ -34,16 +34,18 @@ struct block {
 */
 struct mounted_dev {
     char dev_name[SNAPSHOT_DEV_NAME_LEN];
+    dev_t dev; // Major e minor del device
     char dir_path[MAX_PATH_LEN];
     unsigned long *block_bitmap;
     size_t bitmap_size;
+    unsigned long block_size;
     struct list_head list;
     struct rcu_head rcu_head;
     bool deactivated;
-// #ifdef SNAPSHOT_ASYNC
-//     struct list_head block_list;
-//     spinlock_t block_list_lock;
-// #endif
+// #ifdef USE_BREAD
+    struct list_head block_list;
+    spinlock_t block_list_lock; // Lock per la lista dei blocchi modificati
+// #endif // USE_BREAD
 };
 
 /*
@@ -63,8 +65,8 @@ int snapshot_remove_device(const char *);
 int snapshot_handle_mount(struct dentry *, const char *);
 int snapshot_pre_handle_umount(struct block_device *, char *);
 int snapshot_handle_unmount(char *);
-// int snapshot_handle_write(struct buffer_head *);
-// int snapshot_modify_block(struct buffer_head *);
+int snapshot_add_block(struct buffer_head *);
+int snapshot_save_block(struct buffer_head *);
 int snapshot_init(void);
 void snapshot_cleanup(void);
 
