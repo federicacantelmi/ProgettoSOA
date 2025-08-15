@@ -15,6 +15,7 @@
 #include <linux/major.h>
 #include <linux/loop.h>
 #include <linux/list.h>
+#include <linux/bitmap.h>
 
 #include "snapshot.h"
 #include "loop.h"
@@ -291,11 +292,22 @@ int snapshot_handle_mount(struct dentry *dentry, const char *timestamp) {
         return -EINVAL;
     }
 
+/* PARTE SLEEPABLE  */
+
+    unsigned long *kprobe_cpu = __this_cpu_read(kprobe_context_pointer);
+    __this_cpu_write(*kprobe_cpu, 0UL);
+
+    preempt_enable();
+
     // Verifica che la directory /snapshot esista
     ret = kern_path(SNAPSHOT_DIR_PATH, LOOKUP_DIRECTORY, &root_path);
     if(ret) {
         printk(KERN_ERR "%s: kern_path while creating directory path failed: there's no existing /snapshot\n", MODNAME);
         kfree(dir_path);
+
+        preempt_disable();
+        __this_cpu_write(*kprobe_cpu, (unsigned long)&the_retprobe->kp);
+
         return -ENOENT;
     }
     printk(KERN_INFO "%s: /snapshot directory exists\n", MODNAME);
@@ -310,10 +322,15 @@ int snapshot_handle_mount(struct dentry *dentry, const char *timestamp) {
         if (ret != -EEXIST) {
             printk(KERN_ERR "%s: failed to create snapshot path subdirectory (%d)\n", MODNAME, ret);
             kfree(dir_path);
+
+            preempt_disable();
+            __this_cpu_write(*kprobe_cpu, (unsigned long)&the_retprobe->kp);
+
             return ret;
         }
         // La directory già esiste, non serve crearla
-        done_path_create(&root_path, dentry_ret);
+        // done_path_create(&root_path, dentry_ret);
+        path_put(&root_path);
         goto exists;
     }
 
@@ -324,20 +341,30 @@ int snapshot_handle_mount(struct dentry *dentry, const char *timestamp) {
     if (ret && ret != -EEXIST) {
         printk(KERN_ERR "%s: failed to create snapshot subdirectory (%d)\n", MODNAME, ret);
         done_path_create(&root_path, dentry_ret);
+
+        kfree(dir_path);
+
+        preempt_disable();
+    __this_cpu_write(*kprobe_cpu, (unsigned long)&the_retprobe->kp);
         return ret;
     }
 
     done_path_create(&root_path, dentry_ret);
+    
 
     printk(KERN_INFO "%s: snapshot subdirectory created at %s\n", MODNAME, dir_path);
 
 exists:
 
     // Alloca elemento device active
-    m_dev = kmalloc(sizeof(*m_dev), GFP_ATOMIC);
+    m_dev = kmalloc(sizeof(*m_dev), GFP_KERNEL);
     if(!m_dev) {
         printk(KERN_ERR "%s: kmalloc while creating directory path failed: could not allocate non-mounted device\n", MODNAME);
         kfree(dir_path);
+
+        preempt_disable();
+    __this_cpu_write(*kprobe_cpu, (unsigned long)&the_retprobe->kp);
+
         return -ENOMEM;
     }
 
@@ -352,6 +379,9 @@ exists:
         printk(KERN_ERR "%s: disk or super_block is null in snapshot_handle_mount\n", MODNAME);
         kfree(m_dev);
         kfree(dir_path);
+
+        preempt_disable();
+    __this_cpu_write(*kprobe_cpu, (unsigned long)&the_retprobe->kp);
         return -EINVAL;
     }
 
@@ -375,6 +405,21 @@ exists:
     memset(m_dev->block_bitmap, 0, BITS_TO_LONGS(m_dev->bitmap_size) * sizeof(unsigned long));
     printk(KERN_INFO "%s: bitmap size for device %s is %zu bits\n", MODNAME, d_name, m_dev->bitmap_size);
 
+    m_dev->wq = alloc_workqueue("snapshot_%d%d", WQ_UNBOUND | WQ_MEM_RECLAIM, 1, MAJOR(bdev->bd_dev), MINOR(bdev->bd_dev));
+    if (!m_dev->wq) {
+        printk(KERN_ERR "%s: alloc_workqueue failed for device %s\n", MODNAME, d_name);
+        kfree(m_dev->block_bitmap);
+        kfree(m_dev);
+        kfree(dir_path);
+
+        preempt_disable();
+    __this_cpu_write(*kprobe_cpu, (unsigned long)&the_retprobe->kp);
+        return -ENOMEM;
+    }
+
+    preempt_disable();
+    __this_cpu_write(*kprobe_cpu, (unsigned long)&the_retprobe->kp);
+    
     INIT_LIST_HEAD(&m_dev->list);
 
     INIT_LIST_HEAD(&m_dev->block_list);
@@ -406,11 +451,12 @@ exists:
     if (!found) {
         int err = already_active ? -EALREADY : -ENOENT;
 
+        destroy_workqueue(m_dev->wq);
         spin_unlock(&mounted_devices_list_lock);
         spin_unlock(&nonmounted_devices_list_lock);
 
+        kfree(m_dev->block_bitmap);
         kfree(m_dev);
-        /* se hai già creato dir_path, eliminala qui */
         kfree(dir_path);
 
         printk(KERN_ERR "%s: device %s handle mount aborted (%d)\n", MODNAME, d_name, err);
@@ -458,19 +504,21 @@ int snapshot_pre_handle_umount(struct block_device *bdev, char *d_name) {
 *   Se device ha ancora snapshot attivo, muove il device dalla lista dei device attivi e lo sposta
 *   nella lista dei non attivi, se ha snapshot disattivato, lo rimuove in assoluto.
 */
-int snapshot_handle_unmount(char *d_name) {
+int snapshot_handle_unmount(char *d_name, dev_t dev) {
     struct nonmounted_dev *n_dev = NULL;
     struct nonmounted_dev *p;
     struct mounted_dev *m_dev;
     bool found = false;
     bool already_active = false;
     int ret;
+    bool deactivated = false;
 
+    printk(KERN_INFO "%s: snapshot_handle_unmount called for device %s\n", MODNAME, d_name);
     // Cerca il dev nella lista dei device attivi
     rcu_read_lock();
 
     list_for_each_entry_rcu(m_dev, &mounted_devices_list, list) {
-        if(strncmp(m_dev->dev_name, d_name, SNAPSHOT_DEV_NAME_LEN) == 0) {
+        if(m_dev->dev == dev) {
             found = true;
             break;
         }
@@ -492,6 +540,7 @@ int snapshot_handle_unmount(char *d_name) {
     // Dentro lock perché deactivated deve essere modificato in maniera atomica
     // Se deactivated è false, significa che il device va spostato nella lista dei non attivi, altrimenti va eliminato da entrambe
     if (!m_dev->deactivated) {
+        printk(KERN_INFO "%s: device %s is still active, moving to non-mounted devices list\n", MODNAME, d_name);
         // Alloca elemento device active
         n_dev = kmalloc(sizeof(*n_dev), GFP_ATOMIC);
         if(!n_dev) {
@@ -504,12 +553,17 @@ int snapshot_handle_unmount(char *d_name) {
 
         strscpy(n_dev->dev_name, m_dev->dev_name, SNAPSHOT_DEV_NAME_LEN);
         INIT_LIST_HEAD(&n_dev->list);
+    } else {
+        printk(KERN_INFO "%s: device %s is already deactivated, removing from active list\n", MODNAME, d_name);
+        deactivated = true;
     }
+
+    m_dev->deactivated = true; // Segna il device come deactivated
 
     // Controllo ancora se device è nella lista active (potrei avere unmount concorrente che nel frattempo lo ha spostato di lista)
     found = false;
     list_for_each_entry(m_dev, &mounted_devices_list, list) {
-        if(strncmp(m_dev->dev_name, d_name, SNAPSHOT_DEV_NAME_LEN) == 0) {
+        if(m_dev->dev == dev) {
             found = true;
             break;
         }
@@ -541,15 +595,30 @@ int snapshot_handle_unmount(char *d_name) {
         goto out_unlock_free;
     }
 
-    if(!m_dev->deactivated) {
+    if(!deactivated) {
         list_add_tail_rcu(&n_dev->list, &nonmounted_devices_list);
     }
 
     list_del_rcu(&m_dev->list);
 
+    struct workqueue_struct *wq = m_dev->wq;
+    m_dev->wq = NULL; // Imposta a NULL per evitare che il kworker continui a lavorare su questo device
+
     spin_unlock(&mounted_devices_list_lock);
     spin_unlock(&nonmounted_devices_list_lock);
 
+    unsigned long *kprobe_cpu = __this_cpu_read(kprobe_context_pointer);
+    __this_cpu_write(*kprobe_cpu, 0UL);
+    preempt_enable();
+
+    if(wq) {
+        flush_workqueue(wq);
+        destroy_workqueue(wq);
+    }
+
+    preempt_disable();
+    __this_cpu_write(*kprobe_cpu, (unsigned long)&the_retprobe->kp);
+    
     struct block *bl, *tmp;
     spin_lock(&m_dev->block_list_lock);
     list_for_each_entry_safe(bl, tmp, &m_dev->block_list, list) {
@@ -564,7 +633,7 @@ int snapshot_handle_unmount(char *d_name) {
 
 out_unlock_free:
 
-    if (!m_dev->deactivated) {
+    if (!deactivated) {
             kfree(n_dev);
     }
 
@@ -651,6 +720,8 @@ int snapshot_save_block(struct buffer_head *bh) {
     dev_t dev;
     struct block *found_blk = NULL;
 
+    struct workqueue_struct *wq;
+
     // Controllo se ho già block nella lista dei block del device
 
     if (!bh || !bh->b_bdev) {
@@ -672,9 +743,15 @@ int snapshot_save_block(struct buffer_head *bh) {
 
     rcu_read_unlock();
     printk(KERN_ERR "%s: device %llu not found in mounted devices list\n", MODNAME, (unsigned long long)dev);
-    return -ENOENT;
+    return 0;
 
 found_dev:
+    if(m_dev->deactivated) {
+        rcu_read_unlock();
+        printk(KERN_ERR "%s: device %llu is deactivated, cannot modify block\n", MODNAME, (unsigned long long)dev);
+        return 0; // Non devo fare nulla se il device è deactivated
+    }
+
     // Controlla se il blocco è già stato modificato
     if (block_nr >= m_dev->bitmap_size) {
         rcu_read_unlock();
@@ -710,6 +787,8 @@ found_dev:
         return -ENOENT;
     }
 
+    wq = m_dev->wq;
+
     // Alloca un nuovo work item per il kworker
     work = kmalloc(sizeof(*work), GFP_ATOMIC);
     if (!work) {
@@ -735,7 +814,9 @@ found_dev:
     kfree(found_blk); // Libera la memoria del blocco
 
     // Invia il lavoro al kworker
-    queue_work(system_wq, &work->work);
+    if (wq)
+        queue_work(wq, &work->work);
+
     printk(KERN_INFO "%s: work item created for block %llu on device\n", MODNAME, (unsigned long long)block_nr);
 
     printk(KERN_INFO "%s: block %llu on device removed from list\n", MODNAME, (unsigned long long)block_nr);
@@ -767,9 +848,16 @@ int snapshot_add_block(struct buffer_head *bh) {
         }
     }   
     rcu_read_unlock();
+    return 0; // Se non trovo il device, non devo fare nulla
 
     // Controlla se il blocco è già stato modificato
 found_dev:
+    if(m_dev->deactivated) {
+        printk(KERN_ERR "%s: device %llu is deactivated, cannot add block\n", MODNAME, (unsigned long long)dev);
+        rcu_read_unlock();
+        return 0; // Non devo fare nulla se il device è deactivated
+    }
+
     if (block_nr >= m_dev->bitmap_size) {
         printk(KERN_ERR "%s: block number %llu out of range for device\n", MODNAME, (unsigned long long)block_nr);
         rcu_read_unlock();
@@ -853,6 +941,10 @@ void snapshot_cleanup(void) {
     spin_lock(&mounted_devices_list_lock);
     list_for_each_entry_safe(m, mtmp, &mounted_devices_list, list) {
         list_del_rcu(&m->list);
+        
+        flush_workqueue(m->wq); // Assicura che tutti i lavori siano completati prima di rimuovere il device
+        destroy_workqueue(m->wq);
+        m->wq = NULL;
 
         // #ifdef USE_BREAD
         struct block *bl, *tmp;

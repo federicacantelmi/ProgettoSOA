@@ -1,0 +1,1 @@
+savedcmd_/home/feder/Documents/ProgettoSOA/SINGLEFILE-FS/singlefilefs.ko := ld -r -m elf_x86_64 -z noexecstack --build-id=sha1  -T scripts/module.lds -o /home/feder/Documents/ProgettoSOA/SINGLEFILE-FS/singlefilefs.ko /home/feder/Documents/ProgettoSOA/SINGLEFILE-FS/singlefilefs.o /home/feder/Documents/ProgettoSOA/SINGLEFILE-FS/singlefilefs.mod.o

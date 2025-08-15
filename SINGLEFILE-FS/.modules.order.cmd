@@ -1,0 +1,1 @@
+savedcmd_/home/feder/Documents/ProgettoSOA/SINGLEFILE-FS/modules.order := {   echo /home/feder/Documents/ProgettoSOA/SINGLEFILE-FS/singlefilefs.o; :; } > /home/feder/Documents/ProgettoSOA/SINGLEFILE-FS/modules.order

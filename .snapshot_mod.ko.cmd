@@ -1,0 +1,1 @@
+savedcmd_/home/feder/Documents/ProgettoSOA/snapshot_mod.ko := ld -r -m elf_x86_64 -z noexecstack --build-id=sha1  -T scripts/module.lds -o /home/feder/Documents/ProgettoSOA/snapshot_mod.ko /home/feder/Documents/ProgettoSOA/snapshot_mod.o /home/feder/Documents/ProgettoSOA/snapshot_mod.mod.o

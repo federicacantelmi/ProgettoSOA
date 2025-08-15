@@ -4,6 +4,7 @@
 #include <linux/list.h>
 #include <linux/types.h>
 #include <linux/buffer_head.h>
+#include <linux/kprobes.h>
 
 #define MAX_DEVICES 32
 #define SNAPSHOT_DEV_NAME_LEN 128
@@ -45,7 +46,8 @@ struct mounted_dev {
 // #ifdef USE_BREAD
     struct list_head block_list;
     spinlock_t block_list_lock; // Lock per la lista dei blocchi modificati
-// #endif // USE_BREAD
+    struct workqueue_struct *wq; // Workqueue per gestire le scritture asincrone
+    // #endif // USE_BREAD
 };
 
 /*
@@ -60,11 +62,17 @@ struct nonmounted_dev {
     struct rcu_head rcu_head;
 };
 
+// puntatore globale per mount kprobe
+extern struct kretprobe *the_retprobe;
+
+DECLARE_PER_CPU(unsigned long, BRUTE_START);
+DECLARE_PER_CPU(unsigned long *, kprobe_context_pointer);
+
 int snapshot_add_device(const char *);
 int snapshot_remove_device(const char *);
 int snapshot_handle_mount(struct dentry *, const char *);
 int snapshot_pre_handle_umount(struct block_device *, char *);
-int snapshot_handle_unmount(char *);
+int snapshot_handle_unmount(char *, dev_t);
 int snapshot_add_block(struct buffer_head *);
 int snapshot_save_block(struct buffer_head *);
 int snapshot_init(void);
