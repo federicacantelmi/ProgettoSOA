@@ -1,1 +1,0 @@
-savedcmd_/home/feder/Documents/ProgettoSOA/Module.symvers :=  scripts/mod/modpost -M -m -a      -o /home/feder/Documents/ProgettoSOA/Module.symvers -T /home/feder/Documents/ProgettoSOA/modules.order -i Module.symvers -e 
