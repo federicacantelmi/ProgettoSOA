@@ -25,10 +25,10 @@ The overall project will also need to offer a facility for restoring the snapsho
 - privilegi **root** per caricare il modulo e usare le ioctl
 
 ## Compilazione
-Compila usando:  
-make all  
-cd user  
-make  
+Compila usando:
+make all
+cd user
+make
 cd ..
 
 ## Installazione e rimozione
