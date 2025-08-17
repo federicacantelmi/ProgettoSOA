@@ -40,3 +40,16 @@ int deactivate_snapshot(const char *dev_name, const char *password) {
     printk(KERN_INFO "%s: authentication successful\n", MODNAME);
     return snapshot_remove_device(dev_name);
 }
+
+int restore_snapshot(const char *dev_name, const char *password) {
+
+    int ret;
+    ret = check_auth(password);
+    if (ret < 0) {
+        printk(KERN_ERR "%s: authentication failed\n", MODNAME);
+        return -EACCES;
+    }
+
+    printk(KERN_INFO "%s: authentication successful\n", MODNAME);
+    return snapshot_restore_device(dev_name);
+}

@@ -204,6 +204,122 @@ int snapshot_remove_device(const char *dev_name) {
     printk(KERN_ERR "%s: device %s not found in nonactive or active list\n", MODNAME, dev_name);
     return -ENOENT;
 }
+    
+/**   Funzione invocata dalla API restore_snapshot() per ripristinare lo snapshot di un device. 
+*   @dev_name: nome del device su cui ripristinare lo snapshot.
+*/
+int snapshot_restore_device(const char *dev_name) {
+
+    struct mounted_dev *m_dev;
+
+    struct super_block *sb;
+    char dir_path[MAX_PATH_LEN];
+    char file_path[MAX_PATH_LEN+ 20];
+    unsigned long blk;
+    unsigned long max;
+
+    struct file *f;
+    char *buf;
+    loff_t pos;
+    ssize_t nread;
+    struct buffer_head *bh;
+
+    unsigned long *block_bitmap;
+    unsigned long block_size;
+    dev_t dev;
+
+    int ret = 0;
+
+    printk(KERN_INFO "%s: snapshot_restore_device called for device %s\n", MODNAME, dev_name);
+
+    // Controlla se il device è nella lista dei device montati
+    spin_lock(&mounted_devices_list_lock);
+    list_for_each_entry(m_dev, &mounted_devices_list, list) {
+        if (strncmp(m_dev->dev_name, dev_name, SNAPSHOT_DEV_NAME_LEN) == 0) {
+            goto found;
+        }
+    }
+    printk(KERN_ERR "%s: device %s not found in mounted devices list\n", MODNAME, dev_name);
+    spin_unlock(&mounted_devices_list_lock);
+    return -ENOENT;
+
+found:
+    printk(KERN_INFO "%s: device %s found in mounted devices list\n", MODNAME, dev_name);
+
+    sb = m_dev->sb;
+    max = m_dev->bitmap_size;
+    strscpy(dir_path, m_dev->dir_path, MAX_PATH_LEN);
+    block_bitmap = m_dev->block_bitmap;
+    block_size = m_dev->block_size;
+    dev = m_dev->dev;
+
+    spin_unlock(&mounted_devices_list_lock);
+
+    sb_start_write(sb);
+
+    for (blk = find_first_bit(block_bitmap, max); blk < max; blk = find_next_bit(block_bitmap, max, blk + 1)) {
+
+        pos = 0;
+
+        /* path del file del blocco */
+        snprintf(file_path, sizeof(file_path), "%s/%lu.bin", dir_path, blk);
+
+        /* leggi i dati salvati */
+        f = filp_open(file_path, O_RDONLY, 0);
+        if (IS_ERR(f)) {
+            printk(KERN_WARNING "%s: restore: missing block file %s (skip)\n", MODNAME, file_path);
+            continue;
+        }
+
+        buf = kmalloc(block_size, GFP_KERNEL);
+        if (!buf) {
+            filp_close(f, NULL);
+            ret = -ENOMEM;
+            break;
+        }
+
+        nread = kernel_read(f, buf, block_size, &pos);
+        filp_close(f, NULL);
+
+        if (nread < 0 || nread != block_size) {
+            printk(KERN_ERR "%s: restore: bad read for %s (%zd)\n", MODNAME, file_path, nread);
+            kfree(buf);
+            ret = nread < 0 ? (int)nread : -EIO;
+            break;
+        }
+
+        /* scrivi nel buffer cache e flush */
+        bh = sb_bread(sb, blk);
+        if (!bh) {
+            printk(KERN_ERR "%s: restore: sb_bread failed blk=%lu\n", MODNAME, blk);
+            kfree(buf);
+            ret = -EIO;
+            break;
+        }
+
+        /* copia e flush sincrono */
+        memcpy(bh->b_data, buf, block_size);
+        set_buffer_uptodate(bh);
+        mark_buffer_dirty(bh);
+        sync_dirty_buffer(bh); /* submit_bh(REP_OP_WRITE|REQ_SYNC) */
+
+        brelse(bh);
+        kfree(buf);
+    }
+
+    spin_lock(&mounted_devices_list_lock);
+    list_for_each_entry(m_dev, &mounted_devices_list, list) {
+        if (m_dev->dev == dev) {
+            WRITE_ONCE(m_dev->restoring, true);
+            break;
+        }
+    }
+    spin_unlock(&mounted_devices_list_lock);
+
+    sb_end_write(sb);
+
+    return ret;
+}
 
 
 /*
@@ -405,6 +521,8 @@ exists:
     memset(m_dev->block_bitmap, 0, BITS_TO_LONGS(m_dev->bitmap_size) * sizeof(unsigned long));
     printk(KERN_INFO "%s: bitmap size for device %s is %zu bits\n", MODNAME, d_name, m_dev->bitmap_size);
 
+    m_dev->sb = sb; // Salva superblock del device
+
     m_dev->wq = alloc_workqueue("snapshot_%d%d", WQ_UNBOUND | WQ_MEM_RECLAIM, 1, MAJOR(bdev->bd_dev), MINOR(bdev->bd_dev));
     if (!m_dev->wq) {
         printk(KERN_ERR "%s: alloc_workqueue failed for device %s\n", MODNAME, d_name);
@@ -447,7 +565,6 @@ exists:
         }
     }
 
- // todo copy
     if (!found) {
         int err = already_active ? -EALREADY : -ENOENT;
 
@@ -519,10 +636,15 @@ int snapshot_handle_unmount(char *d_name, dev_t dev) {
 
     list_for_each_entry_rcu(m_dev, &mounted_devices_list, list) {
         if(m_dev->dev == dev) {
+            if (READ_ONCE(m_dev->restoring)) {
+                rcu_read_unlock();
+                printk(KERN_INFO "%s: device %s is restoring, skipping unmount\n", MODNAME, d_name);
+                return 0;
+            }
             found = true;
             break;
         }
-    }
+    }   
 
     rcu_read_unlock();
 
@@ -737,6 +859,10 @@ int snapshot_save_block(struct buffer_head *bh) {
 
     list_for_each_entry_rcu(m_dev, &mounted_devices_list, list) {
         if (m_dev->dev == dev) {
+            if (READ_ONCE(m_dev->restoring)) {
+                rcu_read_unlock();
+                return 0;
+            }
             goto found_dev;
         }
     }
@@ -844,6 +970,10 @@ int snapshot_add_block(struct buffer_head *bh) {
     rcu_read_lock();
     list_for_each_entry_rcu(m_dev, &mounted_devices_list, list) {
         if(m_dev->dev == dev) {
+            if (READ_ONCE(m_dev->restoring)) {
+                rcu_read_unlock();
+                return 0;
+            }
             goto found_dev;
         }
     }   

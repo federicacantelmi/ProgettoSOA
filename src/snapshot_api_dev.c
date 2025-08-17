@@ -48,12 +48,13 @@ static long int snapshot_ioctl(struct file *file, unsigned cmd, unsigned long ar
     switch(cmd) {
         case ACTIVATE_VALUE:
             printk(KERN_INFO "%s: Activating snapshot for device %s\n", MODULE_NAME, user_data.device_name);
-
             return activate_snapshot(user_data.device_name, user_data.password);
-
         case DEACTIVATE_VALUE:
             printk(KERN_INFO "%s: Deactivating snapshot for device %s\n", MODULE_NAME, user_data.device_name);
             return deactivate_snapshot(user_data.device_name, user_data.password);
+        case RESTORE_VALUE:
+            printk(KERN_INFO "%s: Restoring snapshot for device %s\n", MODULE_NAME, user_data.device_name);
+            return restore_snapshot(user_data.device_name, user_data.password);
 // todo get devices
         default:
             printk(KERN_ERR "%s: Unknown ioctl command %u\n", MODULE_NAME, cmd);

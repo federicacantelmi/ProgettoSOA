@@ -36,6 +36,7 @@ struct block {
 struct mounted_dev {
     char dev_name[SNAPSHOT_DEV_NAME_LEN];
     dev_t dev; // Major e minor del device
+    struct super_block *sb; // Superblock del device
     char dir_path[MAX_PATH_LEN];
     unsigned long *block_bitmap;
     size_t bitmap_size;
@@ -43,11 +44,10 @@ struct mounted_dev {
     struct list_head list;
     struct rcu_head rcu_head;
     bool deactivated;
-// #ifdef USE_BREAD
+    bool restoring; // Indica se si sta ripristinando lo snapshot
     struct list_head block_list;
     spinlock_t block_list_lock; // Lock per la lista dei blocchi modificati
     struct workqueue_struct *wq; // Workqueue per gestire le scritture asincrone
-    // #endif // USE_BREAD
 };
 
 /*
@@ -70,6 +70,7 @@ DECLARE_PER_CPU(unsigned long *, kprobe_context_pointer);
 
 int snapshot_add_device(const char *);
 int snapshot_remove_device(const char *);
+int snapshot_restore_device(const char *);
 int snapshot_handle_mount(struct dentry *, const char *);
 int snapshot_pre_handle_umount(struct block_device *, char *);
 int snapshot_handle_unmount(char *, dev_t);

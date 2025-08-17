@@ -48,6 +48,14 @@ int main(int argc, char *argv[]) {
             return 1;
         }
         printf("Snapshot deactivated for device: %s\n", device_name);
+    } else if (strcmp(command, "restore") == 0) {
+        ret = ioctl(fd, RESTORE_VALUE, &cmd);
+        if (ret < 0) {
+            perror("Failed to restore snapshot");
+            close(fd);
+            return 1;
+        }
+        printf("Snapshot restored for device: %s\n", device_name);
     } else {
         fprintf(stderr, "Unknown command: %s. Use 'activate' or 'deactivate'.\n", command);
         close(fd);
