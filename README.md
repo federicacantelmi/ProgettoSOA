@@ -25,7 +25,8 @@ The overall project will also need to offer a facility for restoring the snapsho
 - privilegi **root** per caricare il modulo e usare le ioctl
 
 ## Compilazione
-Compila usando:  
+Compila usando:
+
     make all  
     cd user  
     make  
@@ -33,8 +34,11 @@ Compila usando:
 
 ## Installazione e rimozione
 Carica il modulo passando:  
+
     sudo make install PASSW=LaTuaPassword  
+
 Rimuovi il modulo passando:  
+
     sudo make uninstall  
 
 ## Cleanup
@@ -47,10 +51,12 @@ Pulizia usando:
 Dopo il caricamento del modulo:  
 cd user  
 Per utilizzare le funzionalità offerte:  
+
     ./user/snapshot_user activate   <device> <password>  
     ./user/snapshot_user deactivate <device> <password>  
     ./user/snapshot_user restore    <device> <password>  
 
 ## Retrieve snapshot
 I file con con lo snapshot di ciascun blocco modificato si trovano nella cartella:  
+
     /snapshot/<device_sanitizzato>_<timestamp>/
