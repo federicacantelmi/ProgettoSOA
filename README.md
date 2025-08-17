@@ -26,10 +26,10 @@ The overall project will also need to offer a facility for restoring the snapsho
 
 ## Compilazione
 Compila usando:
-make all
-cd user
-make
-cd ..
+'make all  
+cd user  
+make  
+cd ..'
 
 ## Installazione e rimozione
 Carica il modulo passando:
