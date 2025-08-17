@@ -1,5 +1,5 @@
 /* 
-*   Modulo per inizializzare architettura di8 snapshot
+*   Modulo per inizializzare architettura di snapshot
 */
 
 #include <linux/kernel.h>
@@ -18,35 +18,29 @@
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Federica Cantelmi");
+MODULE_DESCRIPTION("Snapshot module for block devices");
 
-// parametro password per autenticazione
-static char *snapshot_password = NULL;
+static char *snapshot_password = NULL; // parametro per passare la password
 module_param(snapshot_password, charp, 0000);
 MODULE_PARM_DESC(snapshot_password, "Password for snapshot authentication");
 
 int init_module(void) {
     int ret;
 
-    printk(KERN_INFO "%s: 1\n", MODNAME);
     if (!snapshot_password) {
         printk(KERN_ERR "%s: No password passed\n", MODNAME);
         return -EINVAL;
     }
 
-    printk(KERN_INFO "%s: 2\n", MODNAME);
-    // inizializzazione sistema auth
+    /* inizializzazione sistema auth */
     ret = auth_init(snapshot_password);
     if(ret) {
         printk(KERN_ERR "%s: failed to initialize auth system\n", MODNAME);
         return ret;
     }
-    printk(KERN_INFO "%s: 3\n", MODNAME);
-    // memset(snapshot_password, 0, strlen(snapshot_password));
 
-    printk(KERN_INFO "%s: 4\n", MODNAME);
-    // registrazione char device
+    /* registrazione char device */
     ret = dev_init();
-    printk(KERN_INFO "%s: 5\n", MODNAME);
     if(ret < 0) {
         cleanup_auth();
         printk(KERN_ERR "%s: dev_init failed\n", MODNAME);
@@ -74,7 +68,6 @@ int init_module(void) {
         return ret;
     }
 
-
     printk(KERN_INFO "%s: caricamento riuscito\n", MODNAME);
 
     return 0;
@@ -82,21 +75,18 @@ int init_module(void) {
 
 void cleanup_module(void) {
 
-
-    // cleanup sistema auth
-    cleanup_auth();
-    
-    // deregistrazione char device
-    dev_cleanup();
-
-    // cleanup struttura snapshot
-    snapshot_cleanup();
-    
-    // cleanup kprobes
+    /* cleanup kprobes */
     kprobes_cleanup();
 
+    /* cleanup struttura snapshot */
+    snapshot_cleanup();
+
+    /* deregistrazione char device */
+    dev_cleanup();
+
+    /* cleanup sistema auth */
+    cleanup_auth();
+
     printk(KERN_INFO "%s: rimozione riuscita\n", MODNAME);
-
-
 }
 

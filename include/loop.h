@@ -1,4 +1,4 @@
-// Qui ci copio la definizione di loop_device perché non è esportata dal kernel
+/* Qui ci copio la definizione di loop_device perché non è esportata dal kernel */
 
 #ifndef LOOP_H
 #define LOOP_H

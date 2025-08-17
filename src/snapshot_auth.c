@@ -1,7 +1,7 @@
 /*
 *   Codice si occupa di inizializzare la struttura per la
 *   gestione della password e di effettuare il check ogni
-*   volta che si invoca l'attivazione di uno snapshot.
+*   volta che si invoca l'attivazione/deattivazione/restore di uno snapshot.
 */
 
 #include <linux/module.h>
@@ -26,16 +26,18 @@ static int calculate_sha256(const char *password, const char *salt, unsigned cha
 
     size_t psw_len = strlen(password);
 
-    if(!password || psw_len == 0) return -EINVAL;
+    if(!password || psw_len == 0)
+        return -EINVAL;
 
     buffer = kmalloc(psw_len + PSW_SALT_LEN, GFP_KERNEL);
-    if (!buffer) return -ENOMEM;
+    if (!buffer)
+        return -ENOMEM;
 
-    // concatena salt e password
+    /* concatena salt e password */
     memcpy(buffer, salt, PSW_SALT_LEN);
     memcpy(buffer + PSW_SALT_LEN, password, psw_len);
 
-    // calcola SHA256
+    /* calcola SHA256 */
     tfm = crypto_alloc_shash("sha256", 0, 0);
     if (IS_ERR(tfm)) {
         kfree(buffer);
@@ -50,7 +52,6 @@ static int calculate_sha256(const char *password, const char *salt, unsigned cha
     }
 
     desc->tfm = tfm;
-    // desc->flags = 0;
 
     ret = crypto_shash_final(desc, output);
 
@@ -63,15 +64,15 @@ static int calculate_sha256(const char *password, const char *salt, unsigned cha
 
 }
 
-// Funzione invocata quando viene invocata API activate_snapshot
-// o deactivate_snapshot
-// todo inserisci controllo errori quando invochi check_auth
+/*  
+*   Funzione invocata quando viene invocata API activate_snapshot, deactivate_snapshot o restore_snapshot.
+*/
 int check_auth(const char *password) {
 
     unsigned char hash_output[PSW_HASH_LEN];
     int ret;
 
-    // verifica che utente sia root
+    /* verifica che utente sia root */
     if(current_euid().val != 0) {
         printk(KERN_ERR "%s: only root can perform this operation\n", MODNAME);
        return -EPERM;
@@ -83,7 +84,7 @@ int check_auth(const char *password) {
         return ret;
     }
 
-    if(memcmp(hash_output, salted_hash_psw.psw_hash, PSW_HASH_LEN) != 0) {
+    if(memcmp(hash_output, salted_hash_psw.hash, PSW_HASH_LEN) != 0) {
         printk(KERN_ERR "%s: password does not match\n", MODNAME);
         return -EACCES;
     }
@@ -91,29 +92,35 @@ int check_auth(const char *password) {
     return 0;
 }
 
-// Funzione invocata all'inserimento del modulo
+/*
+*   Funzione invocata all'inserimento del modulo
+*/
 int auth_init(const char *password) {
     int ret;
     unsigned char hash_output[PSW_HASH_LEN];
 
-    // genera salt casuale
+    /* genera salt casuale */
     get_random_bytes(salted_hash_psw.salt, PSW_SALT_LEN);
 
+    /* calcola hash della password */
     ret = calculate_sha256(password, salted_hash_psw.salt, hash_output);
     if(ret < 0) {
         return -EINVAL;
     }
 
-    // copia hash nella struttura
-    memcpy(salted_hash_psw.psw_hash, hash_output, PSW_HASH_LEN);
+    /* copia hash nella struttura */
+    memcpy(salted_hash_psw.hash, hash_output, PSW_HASH_LEN);
     printk(KERN_INFO "%s: password hash initialized successfully\n", MODNAME);
     
     return 0;
     
 }
 
-// Funzione invocata alla cleanup del modulo
+/*
+*   Funzione invocata alla cleanup del modulo
+*/
 void cleanup_auth(void) {
     memset(salted_hash_psw.salt, 0, PSW_SALT_LEN);
-    memset(salted_hash_psw.psw_hash, 0, PSW_HASH_LEN);
+    memset(salted_hash_psw.hash, 0, PSW_HASH_LEN);
+    printk(KERN_INFO "%s: password hash cleaned up successfully\n", MODNAME);
 }

@@ -11,7 +11,14 @@
 #define SNAPSHOT_DIR_PATH "/snapshot"
 #define MAX_PATH_LEN 256
 
-//#ifdef SNAPSHOT_ASYNC
+/**
+*   Rappresenta un blocco di dati modificato su un device
+*   @block_nr: numero del blocco;
+*   @bdev: puntatore al block device;
+*   @data: puntatore ai dati del blocco;
+*   @size: dimensione del blocco in byte;
+*   @list: list head per collegare i blocchi modificati;
+*/
 struct block {
     sector_t block_nr;
     struct block_device *bdev;
@@ -19,11 +26,12 @@ struct block {
     size_t size;
     struct list_head list;
 };
-//#endif
 
-/*
+/**
 *   Rappresenta un device montato su cui va eseguito lo snapshot
 *   @dev_name: nome del device;
+*   @dev: major e minor del device;
+*   @sb: superblocco del device;
 *   @dir_path: path della directory in cui salvare i blocchi modificati;
 *   @block_bitmap: bitmap per i blocchi modificati: 0 se non modificato, 1 se modificato;
 *   @bitmap_size: dimensione della bitmap in bit;
@@ -31,7 +39,10 @@ struct block {
 *   @rcu_head: campo per la rimozione asincrona;
 *   @deactivated: flag per indicare se è stato disattivato lo snapshot per quel device (allo smontaggio
 *       il device viene rimosso completamente, non spostato alla lista dei device non attivi);
-*   @block_list: lista dei blocchi acceduti (solo per SNAPSHOT_ASYNC);
+*   @restoring: flag per indicare se si sta ripristinando lo snapshot;
+*   @block_list: lista dei blocchi acceduti;
+*   @block_list_lock: lock per la lista dei blocchi modificati;
+*   @wq: workqueue per gestire le scritture asincrone dei blocchi modificati;
 */
 struct mounted_dev {
     char dev_name[SNAPSHOT_DEV_NAME_LEN];
@@ -50,7 +61,8 @@ struct mounted_dev {
     struct workqueue_struct *wq; // Workqueue per gestire le scritture asincrone
 };
 
-/*
+
+/**
 *   Rappresenta un device non ancora montato su cui va eseguito lo snapshot
 *   @dev_name: nome del device;
 *   @list: list head per collegare device su cui eseguire snapshot;
@@ -62,7 +74,7 @@ struct nonmounted_dev {
     struct rcu_head rcu_head;
 };
 
-// puntatore globale per mount kprobe
+/* puntatore globale per mount kprobe */
 extern struct kretprobe *the_retprobe;
 
 DECLARE_PER_CPU(unsigned long, BRUTE_START);

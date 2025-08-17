@@ -43,7 +43,13 @@ int main(int argc, char *argv[]) {
     } else if (strcmp(command, "deactivate") == 0) {
         ret = ioctl(fd, DEACTIVATE_VALUE, &cmd);
         if (ret < 0) {
-            perror("Failed to deactivate snapshot");
+            if (ret == -ENOENT) {
+                fprintf(stderr, "Snapshot not found for device: %s\n", device_name);
+            } else if (ret == -EBUSY) {
+                fprintf(stderr, "Device %s is still mounted, snapshot will be deactivated\n", device_name);
+            } else {
+                perror("Failed to deactivate snapshot");
+            }
             close(fd);
             return 1;
         }

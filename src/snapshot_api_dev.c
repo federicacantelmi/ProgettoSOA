@@ -1,9 +1,16 @@
+/*
+*   Questo file implementa l'interfaccia del dispositivo a caratteri per l'API di snapshot.
+*   Permette alle applicazioni in user-space di interagire con la funzionalità di snapshot
+*   attraverso comandi ioctl.
+*/
+
 #include <linux/module.h>
 #include <linux/fs.h>
 #include <linux/uaccess.h>
 #include <linux/device.h>
 #include <linux/slab.h>
 #include <linux/cdev.h>
+#include <linux/version.h>
 
 #include "snapshot_api.h"
 #include "snapshot_api_dev.h"
@@ -25,23 +32,24 @@ static int driver_release(struct inode *inode, struct file *file) {
     return 0;
 }
 
+/**
+ *   Funzione per gestire le operazioni ioctl sul device
+ *   @file: puntatore alla struttura file;
+ *   @cmd: comando ioctl;
+ *   @arg: argomento passato all'ioctl.
+ */
 static long int snapshot_ioctl(struct file *file, unsigned cmd, unsigned long arg) {
 
     struct snapshot_cmd user_data;
 
-    // copio argomenti passati dall'utente
+    /* copia argomenti passati dall'utente */
     if(copy_from_user(&user_data, (void __user *)arg, sizeof(struct snapshot_cmd))) {
         printk(KERN_ERR "%s: Failed to copy data from user space\n", MODULE_NAME);
         return -EFAULT;
     }
 
-    printk(KERN_INFO "Password ricevuta: '%s' (len=%zu)", user_data.password, strlen(user_data.password));
-
-    printk(KERN_INFO "%s: Received ioctl command %u with device name %s and password %s\n", MODULE_NAME, cmd, user_data.device_name, user_data.password);
-
     if(strlen(user_data.device_name) == 0 || strlen(user_data.password) == 0) {
         printk(KERN_ERR "%s: Device name or password is empty\n", MODULE_NAME);
-
         return -EINVAL;
     }
 
@@ -55,7 +63,6 @@ static long int snapshot_ioctl(struct file *file, unsigned cmd, unsigned long ar
         case RESTORE_VALUE:
             printk(KERN_INFO "%s: Restoring snapshot for device %s\n", MODULE_NAME, user_data.device_name);
             return restore_snapshot(user_data.device_name, user_data.password);
-// todo get devices
         default:
             printk(KERN_ERR "%s: Unknown ioctl command %u\n", MODULE_NAME, cmd);
             return -EINVAL;
@@ -69,7 +76,9 @@ static struct file_operations fops = {
     .unlocked_ioctl = snapshot_ioctl,
 };
 
-// Funzione per inizializzare il device per esporre le API activate e deactivate
+/*
+*   Funzione per inizializzare il device per esporre le API activate, deactivate e restore.
+*/
 int dev_init(void) {
     major = register_chrdev(0, MODULE_NAME, &fops);
     if(major < 0) {
@@ -77,8 +86,17 @@ int dev_init(void) {
         return major;
     }
 
-    // todo sostituisci poi NULL con THIS_MODULE
+    #if LINUX_VERSION_CODE >= KERNEL_VERSION(6,4,0)
     snapshot_class = class_create(MODULE_NAME);
+    #else
+    snapshot_class = class_create(THIS_MODULE, MODULE_NAME);
+    #endif
+    if (IS_ERR(snapshot_class)) {
+        printk(KERN_ERR "%s: Failed to create class\n", MODULE_NAME);
+        unregister_chrdev(major, MODULE_NAME);
+        return PTR_ERR(snapshot_class);
+    }
+
     if(IS_ERR(snapshot_class)) {
         printk(KERN_ERR "%s: Failed to create class\n", MODULE_NAME);
         unregister_chrdev(major, MODULE_NAME);
@@ -97,7 +115,9 @@ int dev_init(void) {
 }
     
 
-// Funzione per deregistrare il device
+/*
+*   Funzione per deregistrare il device.
+*/
 void dev_cleanup(void) {
     
     device_destroy(snapshot_class, MKDEV(major, 0));

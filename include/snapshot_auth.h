@@ -10,8 +10,8 @@
 
 struct salted_hash_psw_t {
 
-    unsigned char salt[PSW_HASH_LEN];
-    unsigned char psw_hash[PSW_HASH_LEN];
+    unsigned char salt[PSW_SALT_LEN];
+    unsigned char hash[PSW_HASH_LEN];
 
 };
 
