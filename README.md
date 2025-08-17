@@ -26,30 +26,30 @@ The overall project will also need to offer a facility for restoring the snapsho
 
 ## Compilazione
 Compila usando:  
-make all  
-cd user  
-make  
-cd ..
+    make all  
+    cd user  
+    make  
+    cd ..
 
 ## Installazione e rimozione
 Carica il modulo passando:  
-sudo make install PASSW=LaTuaPassword  
+    sudo make install PASSW=LaTuaPassword  
 Rimuovi il modulo passando:  
-sudo make uninstall  
+    sudo make uninstall  
 
 ## Cleanup
 Pulizia usando:  
-make clean  
-cd user  
-make clean  
+    make clean  
+    cd user  
+    make clean  
 
 ## API user-space
 Dopo il caricamento del modulo:  
 cd user  
 Per utilizzare le funzionalità offerte:  
-./user/snapshot_user activate   <device> <password>  
-./user/snapshot_user deactivate <device> <password>  
-./user/snapshot_user restore    <device> <password>  
+    ./user/snapshot_user activate   <device> <password>  
+    ./user/snapshot_user deactivate <device> <password>  
+    ./user/snapshot_user restore    <device> <password>  
 
 ## Retrieve snapshot
 I file con con lo snapshot di ciascun blocco modificato si trovano nella cartella:  
