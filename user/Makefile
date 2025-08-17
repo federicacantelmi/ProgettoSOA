@@ -1,10 +1,10 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -g -I../include
 
-all: test
+all: snapshot_user
 
-test: test.c
-	$(CC) $(CFLAGS) -o test test.c
+snapshot_user: snapshot_user.c
+	$(CC) $(CFLAGS) -o snapshot_user snapshot_user.c
 
 clean:
-	rm -f test
+	rm -f snapshot_user
