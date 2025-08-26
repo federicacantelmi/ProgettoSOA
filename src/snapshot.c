@@ -331,10 +331,19 @@ int snapshot_handle_mount(struct dentry *dentry, const char *timestamp) {
     struct gendisk *disk;
     struct super_block *sb;
 
+    bool read_only = false;
+
     sector_t nr_sectors;
     unsigned long block_size;
 
-    bdev = dentry->d_sb->s_bdev;
+    unsigned long *kprobe_cpu;
+
+    sb = dentry->d_sb;
+    if(!sb) {
+        printk(KERN_ERR "%s: handle_mount: super_block is null\n", MODNAME);
+        return -EINVAL;
+    }
+    bdev = sb->s_bdev;
     if(!bdev) {
         printk(KERN_ERR "%s: handle_mount: block device is null\n", MODNAME);
         return -EINVAL;
@@ -368,85 +377,101 @@ int snapshot_handle_mount(struct dentry *dentry, const char *timestamp) {
         return -EINVAL;
     }
 
-    /* Alloca spazio per il path della directory */
-    dir_path = kmalloc(MAX_PATH_LEN, GFP_ATOMIC);
-    if(!dir_path) {
-        printk(KERN_ERR "%s: handle_mount: kmalloc while creating directory path failed: could not allocate dir_path\n", MODNAME);
-        return -ENOMEM;
+    /* Controlla che il fs non sia read only */
+    if (sb_rdonly(sb)) {
+        printk(KERN_WARNING "%s: handle_mount: filesystem is read-only, no snapshot will be saved for device %s\n", MODNAME, d_name);
+        read_only = true;
     }
 
-    if (d_name_path[0] == '/') {
-        size_t len = strlen(d_name_path);
-        /* sposta tutto di un byte a sinistra, incluso il ‘\0’ */
-        memmove(d_name_path, d_name_path+1, len);
-    }
+    if(!read_only) {
 
-    for (size_t i = 0; d_name_path[i]; i++) {
-        if (d_name_path[i] == '/')
-            d_name_path[i] = '_';
-    }
+        /* Alloca spazio per il path della directory */
+        dir_path = kmalloc(MAX_PATH_LEN, GFP_ATOMIC);
+        if(!dir_path) {
+            printk(KERN_ERR "%s: handle_mount: kmalloc while creating directory path failed: could not allocate dir_path\n", MODNAME);
+            return -ENOMEM;
+        }
 
-    /* Costruisce path */
-    ret = snprintf(dir_path, MAX_PATH_LEN, "%s/%s_%s", SNAPSHOT_DIR_PATH, d_name_path, timestamp);
-    if(ret >= MAX_PATH_LEN || ret < 0) {
-        printk(KERN_ERR "%s: handle_mount: snprintf while creating directory path failed\n", MODNAME);
-        kfree(dir_path);
-        return -EINVAL;
-    }
+        if (d_name_path[0] == '/') {
+            size_t len = strlen(d_name_path);
+            /* sposta tutto di un byte a sinistra, incluso il ‘\0’ */
+            memmove(d_name_path, d_name_path+1, len);
+        }
 
-    /* PARTE SLEEPABLE  */
-    unsigned long *kprobe_cpu = __this_cpu_read(kprobe_context_pointer);
-    __this_cpu_write(*kprobe_cpu, 0UL);
+        for (size_t i = 0; d_name_path[i]; i++) {
+            if (d_name_path[i] == '/')
+                d_name_path[i] = '_';
+        }
 
-    preempt_enable();
+        /* Costruisce path */
+        ret = snprintf(dir_path, MAX_PATH_LEN, "%s/%s_%s", SNAPSHOT_DIR_PATH, d_name_path, timestamp);
+        if(ret >= MAX_PATH_LEN || ret < 0) {
+            printk(KERN_ERR "%s: handle_mount: snprintf while creating directory path failed\n", MODNAME);
+            kfree(dir_path);
+            return -EINVAL;
+        }
 
-    /* Verifica che la directory /snapshot esista */
-    ret = kern_path(SNAPSHOT_DIR_PATH, LOOKUP_DIRECTORY, &root_path);
-    if(ret) {
-        printk(KERN_ERR "%s: handle_mount: kern_path while creating directory path failed: there's no existing /snapshot\n", MODNAME);
-        kfree(dir_path);
+        /* PARTE SLEEPABLE  */
+        kprobe_cpu = __this_cpu_read(kprobe_context_pointer);
+        __this_cpu_write(*kprobe_cpu, 0UL);
 
-        preempt_disable();
-        __this_cpu_write(*kprobe_cpu, (unsigned long)&the_retprobe->kp);
+        preempt_enable();
 
-        return -ENOENT;
-    }
-
-    path_put(&root_path);
-
-    /* Crea path per la nuova sottodirectory */
-    dentry_ret = kern_path_create(AT_FDCWD, dir_path, &root_path, LOOKUP_PARENT);
-    if (IS_ERR(dentry_ret)) {
-        ret = PTR_ERR(dentry_ret);
-        if (ret != -EEXIST) {
-            printk(KERN_ERR "%s: handle_mount: failed to create snapshot path subdirectory (%d)\n", MODNAME, ret);
+        /* Verifica che la directory /snapshot esista */
+        ret = kern_path(SNAPSHOT_DIR_PATH, LOOKUP_DIRECTORY, &root_path);
+        if(ret) {
+            printk(KERN_ERR "%s: handle_mount: kern_path while creating directory path failed: there's no existing /snapshot\n", MODNAME);
             kfree(dir_path);
 
             preempt_disable();
             __this_cpu_write(*kprobe_cpu, (unsigned long)&the_retprobe->kp);
 
+            return -ENOENT;
+        }
+
+        path_put(&root_path);
+
+        /* Crea path per la nuova sottodirectory */
+        dentry_ret = kern_path_create(AT_FDCWD, dir_path, &root_path, LOOKUP_PARENT);
+        if (IS_ERR(dentry_ret)) {
+            ret = PTR_ERR(dentry_ret);
+            if (ret != -EEXIST) {
+                printk(KERN_ERR "%s: handle_mount: failed to create snapshot path subdirectory (%d)\n", MODNAME, ret);
+                kfree(dir_path);
+
+                preempt_disable();
+                __this_cpu_write(*kprobe_cpu, (unsigned long)&the_retprobe->kp);
+
+                return ret;
+            }
+            /* La directory già esiste, non serve crearla */
+            path_put(&root_path);
+            goto exists;
+        }
+
+        /* Crea la sottodirectory */
+        ret = vfs_mkdir(&nop_mnt_idmap, d_inode(root_path.dentry), dentry_ret, S_IFDIR | 0755);
+        if (ret && ret != -EEXIST) {
+            printk(KERN_ERR "%s: handle_mount: failed to create snapshot subdirectory (%d)\n", MODNAME, ret);
+            done_path_create(&root_path, dentry_ret);
+
+            kfree(dir_path);
+
+            preempt_disable();
+            __this_cpu_write(*kprobe_cpu, (unsigned long)&the_retprobe->kp);
             return ret;
         }
-        /* La directory già esiste, non serve crearla */
-        path_put(&root_path);
-        goto exists;
-    }
 
-    /* Crea la sottodirectory */
-    ret = vfs_mkdir(&nop_mnt_idmap, d_inode(root_path.dentry), dentry_ret, S_IFDIR | 0755);
-    if (ret && ret != -EEXIST) {
-        printk(KERN_ERR "%s: handle_mount: failed to create snapshot subdirectory (%d)\n", MODNAME, ret);
         done_path_create(&root_path, dentry_ret);
+    } else {
+        dir_path = NULL;
 
-        kfree(dir_path);
+        /* PARTE SLEEPABLE  */
+        kprobe_cpu = __this_cpu_read(kprobe_context_pointer);
+        __this_cpu_write(*kprobe_cpu, 0UL);
 
-        preempt_disable();
-    __this_cpu_write(*kprobe_cpu, (unsigned long)&the_retprobe->kp);
-        return ret;
+        preempt_enable();
     }
-
-    done_path_create(&root_path, dentry_ret);
-
 exists:
 
     /* Alloca elemento device active */
@@ -456,25 +481,36 @@ exists:
         kfree(dir_path);
 
         preempt_disable();
-    __this_cpu_write(*kprobe_cpu, (unsigned long)&the_retprobe->kp);
+        __this_cpu_write(*kprobe_cpu, (unsigned long)&the_retprobe->kp);
 
         return -ENOMEM;
     }
 
     strscpy(m_dev->dev_name, d_name, SNAPSHOT_DEV_NAME_LEN);
-    strscpy(m_dev->dir_path, dir_path, MAX_PATH_LEN);
 
+    if(!read_only)
+        strscpy(m_dev->dir_path, dir_path, MAX_PATH_LEN);
+    else
+        m_dev->dir_path[0] = '\0';
+
+    
     m_dev->dev = bdev->bd_dev;
+    m_dev->sb = sb;
+    m_dev->read_only = read_only;
+    m_dev->restoring = false;
+
+    if (read_only) {
+        goto read_only;
+    }
 
     disk = bdev->bd_disk;
-    sb = dentry->d_sb;
-    if(!disk || !sb) {
-        printk(KERN_ERR "%s: handle_mount: disk or super_block is null\n", MODNAME);
+    if(!disk) {
+        printk(KERN_ERR "%s: handle_mount: disk is null\n", MODNAME);
         kfree(m_dev);
         kfree(dir_path);
 
         preempt_disable();
-    __this_cpu_write(*kprobe_cpu, (unsigned long)&the_retprobe->kp);
+        __this_cpu_write(*kprobe_cpu, (unsigned long)&the_retprobe->kp);
         return -EINVAL;
     }
 
@@ -498,8 +534,6 @@ exists:
     memset(m_dev->block_bitmap, 0, BITS_TO_LONGS(m_dev->bitmap_size) * sizeof(unsigned long));
     printk(KERN_DEBUG "%s: handle_mount: bitmap size for device %s is %zu bits\n", MODNAME, d_name, m_dev->bitmap_size);
 
-    m_dev->sb = sb;
-    m_dev->restoring = false;
     m_dev->wq = alloc_workqueue("snapshot_%d%d", WQ_UNBOUND | WQ_MEM_RECLAIM, 1, MAJOR(bdev->bd_dev), MINOR(bdev->bd_dev));
     if (!m_dev->wq) {
         printk(KERN_ERR "%s: handle_mount: alloc_workqueue failed for device %s\n", MODNAME, d_name);
@@ -508,8 +542,17 @@ exists:
         kfree(dir_path);
 
         preempt_disable();
-    __this_cpu_write(*kprobe_cpu, (unsigned long)&the_retprobe->kp);
+        __this_cpu_write(*kprobe_cpu, (unsigned long)&the_retprobe->kp);
         return -ENOMEM;
+    }
+
+read_only:
+
+    if (read_only) {
+        m_dev->block_bitmap = NULL;
+        m_dev->bitmap_size = 0;
+        m_dev->block_size = 0;
+        m_dev->wq = NULL;
     }
 
     preempt_disable();
@@ -517,8 +560,10 @@ exists:
     
     INIT_LIST_HEAD(&m_dev->list);
 
-    INIT_LIST_HEAD(&m_dev->block_list);
-    spin_lock_init(&m_dev->block_list_lock);
+    if (!read_only) {
+        INIT_LIST_HEAD(&m_dev->block_list);
+        spin_lock_init(&m_dev->block_list_lock);
+    }
 
     spin_lock(&mounted_devices_list_lock);
     spin_lock(&nonmounted_devices_list_lock);
@@ -541,7 +586,7 @@ exists:
         }
     }
 
-    if (!found) {
+    if (!found && !read_only) {
         int err = already_active ? -EALREADY : -ENOENT;
 
         destroy_workqueue(m_dev->wq);
@@ -554,6 +599,14 @@ exists:
 
         printk(KERN_ERR "%s: device %s handle mount aborted (%d)\n", MODNAME, d_name, err);
         return err;
+    } else if (!found && read_only) {
+        spin_unlock(&mounted_devices_list_lock);
+        spin_unlock(&nonmounted_devices_list_lock);
+        
+        kfree(m_dev);
+        kfree(dir_path);
+        printk(KERN_DEBUG "%s: device %s is read-only, skipping non-mounted devices list check\n", MODNAME, d_name);
+        return 0;
     }
 
     /* Sposta device da nonactive a active */
@@ -719,15 +772,16 @@ int snapshot_handle_unmount(char *d_name, dev_t dev) {
     preempt_disable();
     __this_cpu_write(*kprobe_cpu, (unsigned long)&the_retprobe->kp);
     
-    struct block *bl, *tmp;
-    spin_lock(&m_dev->block_list_lock);
-    list_for_each_entry_safe(bl, tmp, &m_dev->block_list, list) {
-        list_del(&bl->list);
-        kfree(bl->data);
-        kfree(bl);
+    if(!m_dev->read_only) {
+        struct block *bl, *tmp;
+        spin_lock(&m_dev->block_list_lock);
+        list_for_each_entry_safe(bl, tmp, &m_dev->block_list, list) {
+            list_del(&bl->list);
+            kfree(bl->data);
+            kfree(bl);
+        }
+        spin_unlock(&m_dev->block_list_lock);
     }
-    spin_unlock(&m_dev->block_list_lock);
-
     call_rcu(&m_dev->rcu_head, free_device_m_rcu);
     return 0;
 
@@ -843,6 +897,10 @@ int snapshot_save_block(struct buffer_head *bh) {
         if (m_dev->dev == dev) {
             if (READ_ONCE(m_dev->restoring)) {
                 rcu_read_unlock();
+                return 0;
+            } else if (m_dev->read_only) {
+                rcu_read_unlock();
+                printk(KERN_DEBUG "%s: save_block: device %llu is read-only, cannot modify block\n", MODNAME, (unsigned long long)dev);
                 return 0;
             }
             goto found_dev;
@@ -962,6 +1020,10 @@ int snapshot_add_block(struct buffer_head *bh) {
             if (READ_ONCE(m_dev->restoring)) {
                 rcu_read_unlock();
                 return 0;
+            } else if (m_dev->read_only) {
+                rcu_read_unlock();
+                printk(KERN_DEBUG "%s: add_block: device %llu is read-only, cannot add block\n", MODNAME, (unsigned long long)dev);
+                return 0;
             }
             goto found_dev;
         }
@@ -1063,21 +1125,24 @@ void snapshot_cleanup(void) {
     spin_lock(&mounted_devices_list_lock);
     list_for_each_entry_safe(m, mtmp, &mounted_devices_list, list) {
         list_del_rcu(&m->list);
-
-        /* Assicura che tutti i lavori siano completati prima di rimuovere il device */
-        flush_workqueue(m->wq);
-        destroy_workqueue(m->wq);
-        m->wq = NULL;
-
-        /* Libera tutte le strutture dati allocate per i blocchi */
-        struct block *bl, *tmp;
-        spin_lock(&m->block_list_lock);
-        list_for_each_entry_safe(bl, tmp, &m->block_list, list) {
-            list_del(&bl->list);
-            kfree(bl->data);
-            kfree(bl);
+        if(m->wq) {
+            /* Assicura che tutti i lavori siano completati prima di rimuovere il device */
+            flush_workqueue(m->wq);
+            destroy_workqueue(m->wq);
+            m->wq = NULL;
         }
-        spin_unlock(&m->block_list_lock);
+
+        if(!m->read_only) {
+            /* Libera tutte le strutture dati allocate per i blocchi */
+            struct block *bl, *tmp;
+            spin_lock(&m->block_list_lock);
+            list_for_each_entry_safe(bl, tmp, &m->block_list, list) {
+                list_del(&bl->list);
+                kfree(bl->data);
+                kfree(bl);
+            }
+            spin_unlock(&m->block_list_lock);
+        }
 
         call_rcu(&m->rcu_head, free_device_m_rcu);
 

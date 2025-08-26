@@ -43,6 +43,7 @@ struct block {
 *   @block_list: lista dei blocchi acceduti;
 *   @block_list_lock: lock per la lista dei blocchi modificati;
 *   @wq: workqueue per gestire le scritture asincrone dei blocchi modificati;
+*   @read_only: flag per indicare se il device è in sola lettura (non si salvano i blocchi modificati);
 */
 struct mounted_dev {
     char dev_name[SNAPSHOT_DEV_NAME_LEN];
@@ -59,6 +60,7 @@ struct mounted_dev {
     struct list_head block_list;
     spinlock_t block_list_lock;
     struct workqueue_struct *wq;
+    bool read_only;
 };
 
 
