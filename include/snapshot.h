@@ -46,8 +46,8 @@ struct block {
 */
 struct mounted_dev {
     char dev_name[SNAPSHOT_DEV_NAME_LEN];
-    dev_t dev; // Major e minor del device
-    struct super_block *sb; // Superblock del device
+    dev_t dev;
+    struct super_block *sb;
     char dir_path[MAX_PATH_LEN];
     unsigned long *block_bitmap;
     size_t bitmap_size;
@@ -55,10 +55,10 @@ struct mounted_dev {
     struct list_head list;
     struct rcu_head rcu_head;
     bool deactivated;
-    bool restoring; // Indica se si sta ripristinando lo snapshot
+    bool restoring;
     struct list_head block_list;
-    spinlock_t block_list_lock; // Lock per la lista dei blocchi modificati
-    struct workqueue_struct *wq; // Workqueue per gestire le scritture asincrone
+    spinlock_t block_list_lock;
+    struct workqueue_struct *wq;
 };
 
 

@@ -6,8 +6,6 @@
 #define PSW_SALT_LEN 16
 #define PSW_HASH_LEN 32
 
-// todo inserisci spinlock per gestire salted hash
-
 struct salted_hash_psw_t {
 
     unsigned char salt[PSW_SALT_LEN];

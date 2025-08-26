@@ -31,21 +31,6 @@ static DEFINE_SPINLOCK(mounted_devices_list_lock);
 static LIST_HEAD(nonmounted_devices_list);
 static DEFINE_SPINLOCK(nonmounted_devices_list_lock);
 
-/*
-cd Documents/ProgettoSOA
-make all
-sudo make install PASSW=fede
-cd user
-sudo ./test activate /home/feder/Documents/ProgettoSOA/SINGLEFILE-FS/image fede
-cd ../SINGLEFILE-FS
-make all
-sudo make load-FS-driver
-sudo make create-fs
-sudo make mount-fs
-
-*/
-
-
 /**
 *   Struttura per passare lavoro a kworker
 *   @work: struttura di lavoro per il kworker
