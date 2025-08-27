@@ -122,7 +122,32 @@ static char *get_name(struct block_device *bdev, bool *is_device_file) {
 */
 int snapshot_add_device(const char *dev_name) {
 
-    struct nonmounted_dev *new_dev;
+    struct nonmounted_dev *new_dev, *n_dev;
+    struct mounted_dev *m_dev;
+
+    rcu_read_lock();
+    list_for_each_entry_rcu(n_dev, &nonmounted_devices_list, list) {
+        if (strncmp(n_dev->dev_name, dev_name, SNAPSHOT_DEV_NAME_LEN) == 0) {
+            rcu_read_unlock();
+            printk(KERN_DEBUG "%s: add: device %s already in non-mounted list\n", MODNAME, dev_name);
+            return -EALREADY;
+        }
+    }
+    list_for_each_entry_rcu(m_dev, &mounted_devices_list, list) {
+        if (strncmp(m_dev->dev_name, dev_name, SNAPSHOT_DEV_NAME_LEN) == 0) {
+            /* Se il device è montato, riattiva lo snapshot */
+            if (READ_ONCE(m_dev->deactivated)) {
+                WRITE_ONCE(m_dev->deactivated, false);
+                rcu_read_unlock();
+                printk(KERN_INFO "%s: add: device %s reactivated while mounted\n", MODNAME, dev_name);
+                return 0;
+            }
+            rcu_read_unlock();
+            printk(KERN_DEBUG "%s: add: device %s already active/mounted\n", MODNAME, dev_name);
+            return -EALREADY;
+        }
+    }
+    rcu_read_unlock();
 
     new_dev = kmalloc(sizeof(*new_dev), GFP_KERNEL);
     if(!new_dev) {
@@ -131,13 +156,51 @@ int snapshot_add_device(const char *dev_name) {
     }
 
     strscpy(new_dev->dev_name, dev_name,SNAPSHOT_DEV_NAME_LEN);
+    new_dev->block_bitmap = NULL;
+    new_dev->bitmap_size  = 0;
+    new_dev->block_size   = 0;
+    new_dev->device_file  = false;
+    new_dev->dir_path[0]  = '\0';
+
     INIT_LIST_HEAD(&new_dev->list);
     new_dev->rcu_head = (struct rcu_head){0};
 
     /* Usa rcu per consentire letture concorrenti visto che hook intercetta tante sb_bread */
+    spin_lock(&mounted_devices_list_lock);
     spin_lock(&nonmounted_devices_list_lock);
+
+    list_for_each_entry(m_dev, &mounted_devices_list, list) {
+        if (strncmp(m_dev->dev_name, dev_name, SNAPSHOT_DEV_NAME_LEN) == 0) {
+            if (READ_ONCE(m_dev->deactivated)) {
+                WRITE_ONCE(m_dev->deactivated, false);
+                spin_unlock(&nonmounted_devices_list_lock);
+                spin_unlock(&mounted_devices_list_lock);
+                kfree(new_dev);
+                printk(KERN_INFO "%s: add: device %s reactivated while mounted\n", MODNAME, dev_name);
+                return 0;
+            }
+            spin_unlock(&nonmounted_devices_list_lock);
+            spin_unlock(&mounted_devices_list_lock);
+            kfree(new_dev);
+            printk(KERN_INFO "%s: add: device %s already active/mounted\n", MODNAME, dev_name);
+            return -EALREADY;
+        }
+    }
+
+    list_for_each_entry(n_dev, &nonmounted_devices_list, list) {
+        if (strncmp(n_dev->dev_name, dev_name, SNAPSHOT_DEV_NAME_LEN) == 0) {
+            spin_unlock(&nonmounted_devices_list_lock);
+            spin_unlock(&mounted_devices_list_lock);
+            kfree(new_dev);
+            printk(KERN_DEBUG "%s: add: device %s already in non-mounted list\n", MODNAME, dev_name);
+            return -EALREADY;
+        }
+    }
+
     list_add_rcu(&new_dev->list, &nonmounted_devices_list);
+
     spin_unlock(&nonmounted_devices_list_lock);
+    spin_unlock(&mounted_devices_list_lock);
 
     printk(KERN_INFO "%s: add: device %s added to non-mounted devices list\n", MODNAME, dev_name);
 
@@ -161,7 +224,7 @@ int snapshot_remove_device(const char *dev_name) {
     list_for_each_entry(m, &mounted_devices_list, list) {
         if (strncmp(m->dev_name, dev_name, SNAPSHOT_DEV_NAME_LEN) == 0) {
             /* Se il device è montato, non può essere rimosso ma lo sarà allo smontaggio */
-            m->deactivated = true;
+            WRITE_ONCE(m->deactivated, true);
             spin_unlock(&mounted_devices_list_lock);
             printk(KERN_INFO "%s: remove: device %s is still mounted, snapshot will be deactivated\n", MODNAME, dev_name);
             return -EBUSY;
@@ -506,8 +569,7 @@ exists:
     
     m_dev->dev = bdev->bd_dev;
     m_dev->sb = sb;
-    m_dev->read_only = read_only;
-    m_dev->restoring = false;
+    WRITE_ONCE(m_dev->read_only, read_only);
     m_dev->device_file = is_device_file;
 
     if (read_only) {
@@ -539,6 +601,9 @@ exists:
         printk(KERN_ERR "%s: handle_mount: kmalloc failed for block_bitmap\n", MODNAME);
         kfree(m_dev);
         kfree(dir_path);
+
+        preempt_disable();
+        __this_cpu_write(*kprobe_cpu, (unsigned long)&the_retprobe->kp);
         return -ENOMEM;
     }
     /* Inizializza bitmap a zero */
@@ -581,7 +646,7 @@ read_only:
     spin_lock(&mounted_devices_list_lock);
     spin_lock(&nonmounted_devices_list_lock);
 
-    m_dev->deactivated = false;
+    WRITE_ONCE(m_dev->deactivated, false);
 
     /* Controlla ancora se device è nella lista non mounted (potrei avere mount concorrente che nel frattempo lo ha spostato di lista) */
     found = false;
@@ -599,6 +664,7 @@ read_only:
         }
     }
 
+    /* Se non trovato e non in sola lettura, abortisce */
     if (!found && !read_only) {
         int err = already_active ? -EALREADY : -ENOENT;
 
@@ -612,12 +678,15 @@ read_only:
 
         printk(KERN_ERR "%s: device %s handle mount aborted (%d)\n", MODNAME, d_name, err);
         return err;
+    /* Se non trovato ma in sola lettura, continua senza fare nulla */
     } else if (!found && read_only) {
+
         spin_unlock(&mounted_devices_list_lock);
         spin_unlock(&nonmounted_devices_list_lock);
-        
+
         kfree(m_dev);
         kfree(dir_path);
+
         printk(KERN_DEBUG "%s: device %s is read-only, skipping non-mounted devices list check\n", MODNAME, d_name);
         return 0;
     }
@@ -682,11 +751,6 @@ int snapshot_handle_unmount(char *d_name, dev_t dev) {
 
     list_for_each_entry_rcu(m_dev, &mounted_devices_list, list) {
         if(m_dev->dev == dev) {
-            if (READ_ONCE(m_dev->restoring)) {
-                rcu_read_unlock();
-                printk(KERN_INFO "%s: handle_umount: device %s is restoring, skipping unmount\n", MODNAME, d_name);
-                return 0;
-            }
             found = true;
             break;
         }
@@ -707,7 +771,7 @@ int snapshot_handle_unmount(char *d_name, dev_t dev) {
 
     /* Dentro lock perché deactivated deve essere modificato in maniera atomica
        Se deactivated è false, significa che il device va spostato nella lista dei non mounted, altrimenti va eliminato da entrambe */
-    if (!m_dev->deactivated) {
+    if (!READ_ONCE(m_dev->deactivated)) {
         printk(KERN_DEBUG "%s: handle_umount: device %s is still active, moving to non-mounted devices list\n", MODNAME, d_name);
         n_dev = kmalloc(sizeof(*n_dev), GFP_ATOMIC);
         if(!n_dev) {
@@ -730,7 +794,7 @@ int snapshot_handle_unmount(char *d_name, dev_t dev) {
     }
 
     /*  Segna il device come deactivated */
-    m_dev->deactivated = true;
+    WRITE_ONCE(m_dev->deactivated, true);
     /* Controllo ancora se device è nella lista active (potrei avere unmount concorrente che nel frattempo lo ha spostato di lista) */
     found = false;
     list_for_each_entry(m_dev, &mounted_devices_list, list) {
@@ -793,8 +857,8 @@ int snapshot_handle_unmount(char *d_name, dev_t dev) {
 
     preempt_disable();
     __this_cpu_write(*kprobe_cpu, (unsigned long)&the_retprobe->kp);
-    
-    if(!m_dev->read_only) {
+
+    if (!READ_ONCE(m_dev->read_only)) {
         struct block *bl, *tmp;
         spin_lock(&m_dev->block_list_lock);
         list_for_each_entry_safe(bl, tmp, &m_dev->block_list, list) {
@@ -919,10 +983,7 @@ int snapshot_save_block(struct buffer_head *bh) {
 
     list_for_each_entry_rcu(m_dev, &mounted_devices_list, list) {
         if (m_dev->dev == dev) {
-            if (READ_ONCE(m_dev->restoring)) {
-                rcu_read_unlock();
-                return 0;
-            } else if (m_dev->read_only) {
+            if (READ_ONCE(m_dev->read_only)) {
                 rcu_read_unlock();
                 printk(KERN_DEBUG "%s: save_block: device %llu is read-only, cannot modify block\n", MODNAME, (unsigned long long)dev);
                 return 0;
@@ -936,7 +997,7 @@ int snapshot_save_block(struct buffer_head *bh) {
     return 0;
 
 found_dev:
-    if(m_dev->deactivated) {
+    if (READ_ONCE(m_dev->deactivated)) {
         /* Non devo fare nulla se il device è deactivated */
         rcu_read_unlock();
         printk(KERN_ERR "%s: save_block: device %llu is deactivated, cannot modify block\n", MODNAME, (unsigned long long)dev);
@@ -975,6 +1036,7 @@ found_dev:
     spin_unlock(&m_dev->block_list_lock);
 
     if (!found_blk) {
+        rcu_read_unlock();
         printk(KERN_ERR "%s: save_block: block %llu on device not found in block list\n", MODNAME, (unsigned long long)block_nr);
         return -ENOENT;
     }
@@ -1041,10 +1103,7 @@ int snapshot_add_block(struct buffer_head *bh) {
     rcu_read_lock();
     list_for_each_entry_rcu(m_dev, &mounted_devices_list, list) {
         if(m_dev->dev == dev) {
-            if (READ_ONCE(m_dev->restoring)) {
-                rcu_read_unlock();
-                return 0;
-            } else if (m_dev->read_only) {
+            if (READ_ONCE(m_dev->read_only)) {
                 rcu_read_unlock();
                 printk(KERN_DEBUG "%s: add_block: device %llu is read-only, cannot add block\n", MODNAME, (unsigned long long)dev);
                 return 0;
@@ -1057,7 +1116,7 @@ int snapshot_add_block(struct buffer_head *bh) {
     return 0;
 
     found_dev:
-    if(m_dev->deactivated) {
+    if (READ_ONCE(m_dev->deactivated)) {
         printk(KERN_ERR "%s: add_block: device %llu is deactivated, cannot add block\n", MODNAME, (unsigned long long)dev);
         rcu_read_unlock();
         /* Non devo fare nulla se il device è deactivated */
@@ -1156,7 +1215,7 @@ void snapshot_cleanup(void) {
             m->wq = NULL;
         }
 
-        if(!m->read_only) {
+        if (!READ_ONCE(m->read_only)) {
             /* Libera tutte le strutture dati allocate per i blocchi */
             struct block *bl, *tmp;
             spin_lock(&m->block_list_lock);

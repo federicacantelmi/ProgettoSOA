@@ -40,7 +40,6 @@ struct block {
 *   @rcu_head: campo per la rimozione asincrona;
 *   @deactivated: flag per indicare se è stato disattivato lo snapshot per quel device (allo smontaggio
 *       il device viene rimosso completamente, non spostato alla lista dei device non attivi);
-*   @restoring: flag per indicare se si sta ripristinando lo snapshot;
 *   @block_list: lista dei blocchi acceduti;
 *   @block_list_lock: lock per la lista dei blocchi modificati;
 *   @wq: workqueue per gestire le scritture asincrone dei blocchi modificati;
@@ -58,7 +57,6 @@ struct mounted_dev {
     struct list_head list;
     struct rcu_head rcu_head;
     bool deactivated;
-    bool restoring;
     struct list_head block_list;
     spinlock_t block_list_lock;
     struct workqueue_struct *wq;

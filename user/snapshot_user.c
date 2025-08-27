@@ -48,6 +48,9 @@ int main(int argc, char *argv[]) {
                 case EEXIST:
                     fprintf(stderr, "Snapshot already active for device: %s\n", device_name);
                     break;
+                case EALREADY:
+                    fprintf(stderr, "Snapshot already activated for device: %s\n", device_name);
+                    break;
                 default:
                     perror("Failed to activate snapshot");
             }
