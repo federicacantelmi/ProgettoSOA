@@ -30,6 +30,7 @@ struct block {
 /**
 *   Rappresenta un device montato su cui va eseguito lo snapshot
 *   @dev_name: nome del device;
+*   @device_file: true se è un device file, false se no;
 *   @dev: major e minor del device;
 *   @sb: superblocco del device;
 *   @dir_path: path della directory in cui salvare i blocchi modificati;
@@ -47,6 +48,7 @@ struct block {
 */
 struct mounted_dev {
     char dev_name[SNAPSHOT_DEV_NAME_LEN];
+    bool device_file;
     dev_t dev;
     struct super_block *sb;
     char dir_path[MAX_PATH_LEN];
@@ -67,13 +69,23 @@ struct mounted_dev {
 /**
 *   Rappresenta un device non ancora montato su cui va eseguito lo snapshot
 *   @dev_name: nome del device;
+*   @device_file: true se è un device file, false se no;
 *   @list: list head per collegare device su cui eseguire snapshot;
 *   @rcu_head: campo per la rimozione asincrona;
+*   @dir_path: path della directory in cui sono salvati i blocchi modificati (per restore);
+*   @block_bitmap: bitmap per i blocchi modificati: 0 se non modificato, 1 se modificato (per restore);
+*   @bitmap_size: dimensione della bitmap in bit (per restore);
+*   @block_size: dimensione dei blocchi del filesystem in byte (per restore);
 */
 struct nonmounted_dev {
     char dev_name[SNAPSHOT_DEV_NAME_LEN];
+    bool device_file;
     struct list_head list;
     struct rcu_head rcu_head;
+    char dir_path[MAX_PATH_LEN];
+    unsigned long *block_bitmap;
+    size_t bitmap_size;
+    unsigned long block_size;
 };
 
 /* puntatore globale per mount kprobe */

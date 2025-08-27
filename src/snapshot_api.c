@@ -25,7 +25,7 @@ int activate_snapshot(const char *dev_name, const char *password) {
         return -EACCES;
     }
 
-    printk(KERN_INFO "%s: authentication successful\n", MODNAME);
+    printk(KERN_DEBUG "%s: authentication successful\n", MODNAME);
     return snapshot_add_device(dev_name);
 }
 
@@ -43,7 +43,7 @@ int deactivate_snapshot(const char *dev_name, const char *password) {
         return -EACCES;
     }
 
-    printk(KERN_INFO "%s: authentication successful\n", MODNAME);
+    printk(KERN_DEBUG "%s: authentication successful\n", MODNAME);
     return snapshot_remove_device(dev_name);
 }
 
@@ -61,6 +61,6 @@ int restore_snapshot(const char *dev_name, const char *password) {
         return -EACCES;
     }
 
-    printk(KERN_INFO "%s: authentication successful\n", MODNAME);
+    printk(KERN_DEBUG "%s: authentication successful\n", MODNAME);
     return snapshot_restore_device(dev_name);
 }
