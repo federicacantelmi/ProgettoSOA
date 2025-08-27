@@ -35,7 +35,22 @@ int main(int argc, char *argv[]) {
     if (strcmp(command, "activate") == 0) {
         ret = ioctl(fd, ACTIVATE_VALUE, &cmd);
         if (ret < 0) {
-            perror("Failed to activate snapshot");
+            switch(errno) {
+                case EACCES:
+                    fprintf(stderr, "Authentication failed\n");
+                    break;
+                case EINVAL:
+                    fprintf(stderr, "Invalid arguments provided\n");
+                    break;
+                case ENOENT:
+                    fprintf(stderr, "Device %s not found\n", device_name);
+                    break;
+                case EEXIST:
+                    fprintf(stderr, "Snapshot already active for device: %s\n", device_name);
+                    break;
+                default:
+                    perror("Failed to activate snapshot");
+            }
             close(fd);
             return 1;
         }
@@ -43,12 +58,21 @@ int main(int argc, char *argv[]) {
     } else if (strcmp(command, "deactivate") == 0) {
         ret = ioctl(fd, DEACTIVATE_VALUE, &cmd);
         if (ret < 0) {
-            if (ret == -ENOENT) {
-                fprintf(stderr, "Snapshot not found for device: %s\n", device_name);
-            } else if (ret == -EBUSY) {
-                fprintf(stderr, "Device %s is still mounted, snapshot will be deactivated\n", device_name);
-            } else {
-                perror("Failed to deactivate snapshot");
+            switch(errno) {
+                case EACCES:
+                    fprintf(stderr, "Authentication failed\n");
+                    break;
+                case EINVAL:
+                    fprintf(stderr, "Invalid arguments provided\n");
+                    break;
+                case ENOENT:
+                    fprintf(stderr, "Snapshot not found for device: %s\n", device_name);
+                    break;
+                case EBUSY:
+                    fprintf(stderr, "Device %s is still mounted, snapshot will be deactivated\n", device_name);
+                    break;
+                default:
+                    perror("Failed to deactivate snapshot");
             }
             close(fd);
             return 1;
@@ -57,7 +81,22 @@ int main(int argc, char *argv[]) {
     } else if (strcmp(command, "restore") == 0) {
         ret = ioctl(fd, RESTORE_VALUE, &cmd);
         if (ret < 0) {
-            perror("Failed to restore snapshot");
+            switch(errno) {
+                case EACCES:
+                    fprintf(stderr, "Authentication failed\n");
+                    break;
+                case EINVAL:
+                    fprintf(stderr, "Invalid arguments provided (device is not a file device, feature not implemented)\n");
+                    break;
+                case ENOENT:
+                    fprintf(stderr, "Snapshot not found for device: %s\n", device_name);
+                    break;
+                case EBUSY:
+                    fprintf(stderr, "Device %s is mounted, cannot restore snapshot\n", device_name);
+                    break;
+                default:
+                    perror("Failed to restore snapshot");
+            }
             close(fd);
             return 1;
         }
