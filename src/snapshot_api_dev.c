@@ -42,7 +42,7 @@ static long int snapshot_ioctl(struct file *file, unsigned cmd, unsigned long ar
 
     struct snapshot_cmd user_data;
 
-    /* copia argomenti passati dall'utente */
+    /* Copia argomenti passati dall'utente */
     if(copy_from_user(&user_data, (void __user *)arg, sizeof(struct snapshot_cmd))) {
         printk(KERN_ERR "%s: Failed to copy data from user space\n", MODULE_NAME);
         return -EFAULT;

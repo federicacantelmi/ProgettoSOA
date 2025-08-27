@@ -32,14 +32,14 @@ int init_module(void) {
         return -EINVAL;
     }
 
-    /* inizializzazione sistema auth */
+    /* Inizializzazione sistema auth */
     ret = auth_init(snapshot_password);
     if(ret) {
         printk(KERN_ERR "%s: failed to initialize auth system\n", MODNAME);
         return ret;
     }
 
-    /* registrazione char device */
+    /* Registrazione char device */
     ret = dev_init();
     if(ret < 0) {
         cleanup_auth();
@@ -48,7 +48,7 @@ int init_module(void) {
     }
     printk(KERN_INFO "%s: device major = %d\n", MODNAME, ret);
 
-    // inizializzazione struttura snapshot
+    /* Inizializzazione struttura snapshot */
     ret = snapshot_init();
     if(ret < 0) {
         cleanup_auth();
@@ -57,7 +57,7 @@ int init_module(void) {
         return ret;
     }
 
-    // inizializzazione kprobes
+    /* Inizializzazione kprobes */
     ret = kprobes_init();
     if(ret < 0) {
         cleanup_auth();
@@ -75,16 +75,16 @@ int init_module(void) {
 
 void cleanup_module(void) {
 
-    /* cleanup kprobes */
+    /* Cleanup kprobes */
     kprobes_cleanup();
 
-    /* cleanup struttura snapshot */
+    /* Cleanup struttura snapshot */
     snapshot_cleanup();
 
-    /* deregistrazione char device */
+    /* Deregistrazione char device */
     dev_cleanup();
 
-    /* cleanup sistema auth */
+    /* Cleanup sistema auth */
     cleanup_auth();
 
     printk(KERN_INFO "%s: rimozione riuscita\n", MODNAME);

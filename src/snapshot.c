@@ -192,6 +192,7 @@ int snapshot_remove_device(const char *dev_name) {
     return -ENOENT;
 }
     
+
 /**
 *   Ripristina lo snapshot di un device.
 *   Invocata dalla API restore_snapshot().
@@ -219,7 +220,7 @@ int snapshot_restore_device(const char *dev_name) {
 
     int ret = 0;
 
-    /* Controlla se il device è nella lista dei device montati */
+    /* Controlla se il device è nella lista dei device montati, se lo è -> no restore */
     rcu_read_lock();
     list_for_each_entry_rcu(m_dev, &mounted_devices_list, list) {
         if (strncmp(m_dev->dev_name, dev_name, SNAPSHOT_DEV_NAME_LEN) == 0) {
@@ -233,6 +234,7 @@ int snapshot_restore_device(const char *dev_name) {
     rcu_read_lock();
     list_for_each_entry_rcu(n_dev, &nonmounted_devices_list, list) {
         if (strncmp(n_dev->dev_name, dev_name, SNAPSHOT_DEV_NAME_LEN) == 0) {
+            /* Se il device non è un device file, non è supportato il restore */
             if(!n_dev->device_file) {
                 rcu_read_unlock();
                 printk(KERN_ERR "%s: restore: device %s is not a file device, feature not implemented\n", MODNAME, dev_name);
@@ -255,7 +257,7 @@ int snapshot_restore_device(const char *dev_name) {
     return -ENOENT;
 
 found:
-
+     /* Apre il device file in scrittura */
     file = filp_open(target_path, O_WRONLY | O_LARGEFILE, 0);
     if(IS_ERR(file)) {
         ret = PTR_ERR(file);
@@ -270,8 +272,8 @@ found:
         return -ENOMEM;
     }
 
+    /* Legge i blocchi dalla cartella dove salvo lo snapshot */
     for(blk = find_first_bit(block_bitmap, max); blk < max; blk = find_next_bit(block_bitmap, max, blk + 1)) {
-        /* Legge il blocco dallo snapshot */
         pos = 0;
         snprintf(file_path, sizeof(file_path), "%s/%llu.bin", dir_path, (unsigned long long)blk);
 
@@ -306,7 +308,6 @@ found:
         }
     }
     vfs_fsync(file, 1);
-
 
 out_close:
     kfree(buf);
@@ -420,7 +421,7 @@ int snapshot_handle_mount(struct dentry *dentry, const char *timestamp) {
             return -EINVAL;
         }
 
-        /* PARTE SLEEPABLE  */
+        /* Parte sleepable */
         kprobe_cpu = __this_cpu_read(kprobe_context_pointer);
         __this_cpu_write(*kprobe_cpu, 0UL);
 
@@ -475,7 +476,7 @@ int snapshot_handle_mount(struct dentry *dentry, const char *timestamp) {
     } else {
         dir_path = NULL;
 
-        /* PARTE SLEEPABLE  */
+        /* Parte sleepable */
         kprobe_cpu = __this_cpu_read(kprobe_context_pointer);
         __this_cpu_write(*kprobe_cpu, 0UL);
 
@@ -483,7 +484,7 @@ int snapshot_handle_mount(struct dentry *dentry, const char *timestamp) {
     }
 exists:
 
-    /* Alloca elemento device active */
+    /* Alloca elemento device mounted */
     m_dev = kmalloc(sizeof(*m_dev), GFP_KERNEL);
     if(!m_dev) {
         printk(KERN_ERR "%s: handle_mount: kmalloc while creating directory path failed: could not allocate non-mounted device\n", MODNAME);
@@ -544,6 +545,8 @@ exists:
     memset(m_dev->block_bitmap, 0, BITS_TO_LONGS(m_dev->bitmap_size) * sizeof(unsigned long));
     printk(KERN_DEBUG "%s: handle_mount: bitmap size for device %s is %zu bits\n", MODNAME, d_name, m_dev->bitmap_size);
 
+    /* Crea workqueue per scrittura blocchi modificati */
+    /* Usa workqueue dedicata così può eseguire cleanup */
     m_dev->wq = alloc_workqueue("snapshot_%d%d", WQ_UNBOUND | WQ_MEM_RECLAIM, 1, MAJOR(bdev->bd_dev), MINOR(bdev->bd_dev));
     if (!m_dev->wq) {
         printk(KERN_ERR "%s: handle_mount: alloc_workqueue failed for device %s\n", MODNAME, d_name);
@@ -580,7 +583,7 @@ read_only:
 
     m_dev->deactivated = false;
 
-    /* Controlla ancora se device è nella lista non active (potrei avere mount concorrente che nel frattempo lo ha spostato di lista) */
+    /* Controlla ancora se device è nella lista non mounted (potrei avere mount concorrente che nel frattempo lo ha spostato di lista) */
     found = false;
     list_for_each_entry(n_dev, &nonmounted_devices_list, list) {
         if(strncmp(n_dev->dev_name, d_name, SNAPSHOT_DEV_NAME_LEN) == 0) {
@@ -619,7 +622,7 @@ read_only:
         return 0;
     }
 
-    /* Sposta device da nonactive a active */
+    /* Sposta device da non-mounted a mounted */
     list_add_tail_rcu(&m_dev->list, &mounted_devices_list);
     list_del_rcu(&n_dev->list);
 
@@ -703,7 +706,7 @@ int snapshot_handle_unmount(char *d_name, dev_t dev) {
     spin_lock(&nonmounted_devices_list_lock);
 
     /* Dentro lock perché deactivated deve essere modificato in maniera atomica
-       Se deactivated è false, significa che il device va spostato nella lista dei non attivi, altrimenti va eliminato da entrambe */
+       Se deactivated è false, significa che il device va spostato nella lista dei non mounted, altrimenti va eliminato da entrambe */
     if (!m_dev->deactivated) {
         printk(KERN_DEBUG "%s: handle_umount: device %s is still active, moving to non-mounted devices list\n", MODNAME, d_name);
         n_dev = kmalloc(sizeof(*n_dev), GFP_ATOMIC);
@@ -853,8 +856,10 @@ static void snapshot_worker(struct work_struct *work) {
         goto out_free;
     }
 
+    /* Crea il percorso del file per il blocco */
     snprintf(file_path, MAX_PATH_LEN, "%s/%llu.bin", dir_path, (unsigned long long)block_nr);
 
+    /* Apre il file in scrittura, crea se non esiste, tronca se esiste */
     file = filp_open(file_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (IS_ERR(file)) {
         printk(KERN_ERR "%s: snapshot_worker: filp_open failed for %s, error=%ld\n", MODNAME, file_path, PTR_ERR(file));
@@ -1032,7 +1037,7 @@ int snapshot_add_block(struct buffer_head *bh) {
     size = bh->b_size;
     block_nr = bh->b_blocknr;
 
-    /* Accedo ai dati del device e li salvo in lista */
+    /* Accede ai dati del device e li salva in lista */
     rcu_read_lock();
     list_for_each_entry_rcu(m_dev, &mounted_devices_list, list) {
         if(m_dev->dev == dev) {
