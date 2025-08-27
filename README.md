@@ -50,7 +50,9 @@ Pulizia usando:
 
 ## API user-space
 Dopo il caricamento del modulo:  
-cd user  
+
+    cd user  
+
 Per utilizzare le funzionalità offerte:  
 
     ./user/snapshot_user activate   <device> <password>  
@@ -58,6 +60,6 @@ Per utilizzare le funzionalità offerte:
     ./user/snapshot_user restore    <device> <password>  
 
 ## Retrieve snapshot
-I file con con lo snapshot di ciascun blocco modificato si trovano nella cartella:  
+I file con lo snapshot di ciascun blocco modificato si trovano nella cartella:  
 
     /snapshot/<device_sanitizzato>_<timestamp>/
